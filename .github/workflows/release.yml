@@ -1,0 +1,126 @@
+name: Release
+
+# 推送到 main 即触发；若对应版本 tag 已存在则跳过，避免重复发版。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply Yimai rebrand
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # 更新源必须显式指向本仓库，否则通用替换会把它改成 LingyunStudio/Yimai
+          $pairs = @(
+            @('LingyunStudio/RustMusic', 'jiuge613/YimaiMusic'),
+            @('RustMusic', 'Yimai'),
+            @('rustmusic', 'yimai')
+          )
+          $exts = @('*.rs','*.ts','*.tsx','*.js','*.jsx','*.json','*.toml','*.html','*.css','*.md','*.ps1','*.iss','*.yml')
+          $files = Get-ChildItem -Path . -Recurse -Include $exts -File -ErrorAction SilentlyContinue |
+            Where-Object {
+              $p = $_.FullName
+              $p -notmatch 'node_modules' -and
+              $p -notmatch '\\target\\' -and
+              $p -notmatch '\\icons\\' -and
+              $p -notmatch '\.git\\' -and
+              $_.Name -ne 'LICENSE'
+            }
+          $changed = 0
+          foreach ($f in $files) {
+            $t = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction SilentlyContinue
+            if ($null -eq $t) { continue }
+            $orig = $t
+            foreach ($p in $pairs) { $t = $t.Replace($p[0], $p[1]) }
+            if ($t -ne $orig) {
+              Set-Content -LiteralPath $f.FullName -Value $t -NoNewline -Encoding UTF8
+              $changed++
+            }
+          }
+          Write-Host "rebranded files: $changed"
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "version = $v"
+
+      - name: Skip if tag already released
+        id: guard
+        shell: bash
+        run: |
+          if git ls-remote --tags origin "refs/tags/v${{ steps.ver.outputs.version }}" | grep -q .; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "tag v${{ steps.ver.outputs.version }} already exists, skipping"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        if: steps.guard.outputs.skip == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        if: steps.guard.outputs.skip == 'false'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        if: steps.guard.outputs.skip == 'false'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        if: steps.guard.outputs.skip == 'false'
+        run: npm install
+
+      - name: Install Inno Setup
+        if: steps.guard.outputs.skip == 'false'
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Tauri release
+        if: steps.guard.outputs.skip == 'false'
+        run: npm run tauri build
+
+      - name: Package installer
+        if: steps.guard.outputs.skip == 'false'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC not found at $iscc" }
+          # ISCC 依赖 UTF-8 BOM 正确识别 .iss 里的中文，先确保带 BOM 再编译
+          $issPath = "installer\Yimai.iss"
+          $issText = [System.IO.File]::ReadAllText((Resolve-Path $issPath), [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText((Resolve-Path $issPath), $issText, [System.Text.UTF8Encoding]::new($true))
+          & $iscc $issPath
+          if ($LASTEXITCODE -ne 0) { throw "ISCC packaging failed" }
+          Get-ChildItem installer\output\*.exe | ForEach-Object { Write-Host "built: $($_.Name) ($([math]::Round($_.Length/1MB,2)) MB)" }
+
+      - name: Create tag and release
+        if: steps.guard.outputs.skip == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: Yimai v${{ steps.ver.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          files: installer/output/*.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
