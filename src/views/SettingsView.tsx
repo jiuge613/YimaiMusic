@@ -681,7 +681,7 @@ export default function SettingsView() {
         </section>
 
         <div className="text-[11.5px] text-[var(--ink-3)] px-1 pb-2">
-          RustMusic {appVersion ? `v${appVersion}` : ""} · Rust + Tauri 2 + React ·
+          Yimai {appVersion ? `v${appVersion}` : ""} · Rust + Tauri 2 + React ·
           引擎 rodio / symphonia · 界面仅支持 Windows（架构上保留跨平台能力）
         </div>
       </div>

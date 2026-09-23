@@ -1,8 +1,8 @@
 [package]
-name = "rustmusic"
+name = "yimai"
 version = "0.1.5"
-description = "RustMusic - 精美的高性能音乐播放器"
-authors = ["RustMusic"]
+description = "Yimai - 精美的高性能音乐播放器"
+authors = ["Yimai"]
 license = "Apache-2.0"
 edition = "2021"
 

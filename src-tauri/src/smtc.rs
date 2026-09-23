@@ -72,8 +72,8 @@ fn run(app: AppHandle, rx: Receiver<SmtcMsg>) {
     };
 
     let config = PlatformConfig {
-        dbus_name: "rustmusic",
-        display_name: "RustMusic",
+        dbus_name: "yimai",
+        display_name: "Yimai",
         hwnd,
     };
 

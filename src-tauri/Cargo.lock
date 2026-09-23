@@ -3369,7 +3369,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustmusic"
+name = "yimai"
 version = "0.1.5"
 dependencies = [
  "aes",

@@ -924,7 +924,7 @@ function QrLoginModal({
           )}
         </div>
         <div className="text-[10.5px] text-[var(--ink-3)] text-center leading-relaxed max-w-[300px]">
-          登录凭证仅保存在本机设置中，用于按你的账号权益获取播放链接；RustMusic
+          登录凭证仅保存在本机设置中，用于按你的账号权益获取播放链接；Yimai
           不提供任何绕过会员/版权限制的能力。
         </div>
       </div>

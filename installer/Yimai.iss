@@ -1,12 +1,12 @@
-﻿; RustMusic Windows 安装包脚本（Inno Setup 6）
+﻿; Yimai Windows 安装包脚本（Inno Setup 6）
 ; 一键打包: powershell -ExecutionPolicy Bypass -File installer\build.ps1
 ;          （等价于: npm run tauri build → 本脚本编译）
-; 输出: installer\output\RustMusic_<版本>_x64-setup.exe
+; 输出: installer\output\Yimai_<版本>_x64-setup.exe
 
-#define MyAppName "RustMusic"
-#define MyAppExeName "rustmusic.exe"
+#define MyAppName "Yimai"
+#define MyAppExeName "yimai.exe"
 ; 版本号直接取自编译产物的文件版本，与 tauri.conf.json 保持一致
-#define MyAppVersion GetFileVersion("..\src-tauri\target\release\rustmusic.exe")
+#define MyAppVersion GetFileVersion("..\src-tauri\target\release\yimai.exe")
 
 [Setup]
 AppId={{B7DA4657-0D10-4718-A6D5-A02863D39352}
@@ -17,7 +17,7 @@ AppPublisher={#MyAppName}
 DefaultDirName={autopf}\{#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=output
-OutputBaseFilename=RustMusic_{#MyAppVersion}_x64-setup
+OutputBaseFilename=Yimai_{#MyAppVersion}_x64-setup
 SetupIconFile=..\src-tauri\icons\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/max
@@ -39,7 +39,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; 覆盖前先结束正在运行的实例
-Source: "..\src-tauri\target\release\rustmusic.exe"; DestDir: "{app}"; Flags: ignoreversion; BeforeInstall: KillRunningApp
+Source: "..\src-tauri\target\release\yimai.exe"; DestDir: "{app}"; Flags: ignoreversion; BeforeInstall: KillRunningApp
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -82,7 +82,7 @@ begin
   if (CurPageID = wpReady) and (not IsWebView2Installed) then
   begin
     if MsgBox(
-        '系统未检测到 Microsoft Edge WebView2 运行时，缺少它 RustMusic 将无法启动。' + #13#10 + #13#10 +
+        '系统未检测到 Microsoft Edge WebView2 运行时，缺少它 Yimai 将无法启动。' + #13#10 + #13#10 +
         '是否现在打开官方下载页面？下载安装完成后，再重新运行本安装程序即可。',
         mbConfirmation, MB_YESNO) = IDYES then
       OpenWebView2Download;

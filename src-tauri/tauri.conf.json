@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "RustMusic",
+  "productName": "Yimai",
   "version": "0.1.5",
-  "identifier": "com.rustmusic.app",
+  "identifier": "com.yimai.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "RustMusic",
+        "title": "Yimai",
         "width": 1280,
         "height": 880,
         "minWidth": 1000,

@@ -515,7 +515,7 @@ export const SKINS: Skin[] = [
   },
 ];
 
-const SKIN_KEY = "rustmusic.skin";
+const SKIN_KEY = "yimai.skin";
 export const DEFAULT_SKIN = "default";
 
 const URI_CACHE = new Map<string, string>();

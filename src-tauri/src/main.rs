@@ -277,7 +277,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id("main-tray")
         .icon(app.default_window_icon().expect("missing app icon").clone())
-        .tooltip("RustMusic")
+        .tooltip("Yimai")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, ev| match ev.id().as_ref() {

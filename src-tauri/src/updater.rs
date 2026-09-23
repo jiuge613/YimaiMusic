@@ -13,9 +13,11 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-/// GitHub 仓库（owner/name），自动更新从这里拉取最新 Release
-const GITHUB_REPO: &str = "LingyunStudio/RustMusic";
-const UA: &str = "RustMusic-Updater";
+/// GitHub 仓库（owner/name），自动更新从这里拉取最新 Release。
+/// 已指向本项目自己的仓库：jiuge613/YimaiMusic（上游为 LingyunStudio/RustMusic）。
+/// 若日后改名/迁移仓库，同步修改此处即可。
+const GITHUB_REPO: &str = "jiuge613/YimaiMusic";
+const UA: &str = "Yimai-Updater";
 /// 下载整体超时兜底：安装包一般 10~20 MB，弱网也足够；卡死连接最终会在此报错
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
@@ -124,7 +126,7 @@ pub fn fetch_latest(current_version: &str) -> Result<Option<UpdateInfo>, String>
 /// 返回下载文件的完整路径。文件大小与 release 附件声明的 size 校验一致。
 pub fn download(app: &AppHandle, url: &str, name: &str, expected_size: u64) -> Result<PathBuf, String> {
     DOWNLOAD_CANCEL.store(false, Ordering::Relaxed);
-    // 附件名固定为 RustMusic_*-setup.exe，仅允许常规文件名字符，避免拼进脚本出问题
+    // 附件名固定为 Yimai_*-setup.exe，仅允许常规文件名字符，避免拼进脚本出问题
     let safe_name: String = name
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '(' | ')'))
@@ -203,7 +205,7 @@ fn build_update_script(setup: &str, dir: &str, exe: &str) -> String {
     let stem = Path::new(setup)
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("rustmusic-setup");
+        .unwrap_or("yimai-setup");
     let stem_q = ps_quote(stem);
 
     format!(
@@ -241,7 +243,7 @@ pub fn install_and_restart(app: &AppHandle, setup: &Path) -> Result<(), String> 
         &exe.to_string_lossy(),
     );
 
-    let script_path = std::env::temp_dir().join(format!("rustmusic-update-{}.ps1", std::process::id()));
+    let script_path = std::env::temp_dir().join(format!("yimai-update-{}.ps1", std::process::id()));
     std::fs::write(&script_path, format!("\u{feff}{script}"))
         .map_err(|e| format!("写入更新脚本失败：{e}"))?;
 
@@ -298,7 +300,7 @@ mod tests {
         assert!(is_newer(&info.version, "0.0.1"));
         assert!(info
             .asset_url
-            .contains("github.com/LingyunStudio/RustMusic/releases/download"));
+            .contains("github.com/jiuge613/YimaiMusic/releases/download"));
         assert!(info.asset_name.to_lowercase().contains("setup"));
         assert!(info.asset_size > 0);
 
@@ -312,19 +314,19 @@ mod tests {
     #[test]
     fn script_quotes_paths_with_spaces_and_chinese() {
         let s = build_update_script(
-            r"C:\Users\张三\AppData\Local\Temp\RustMusic_0.1.2.0_x64-setup.exe",
-            r"C:\Program Files\RustMusic",
-            r"C:\Program Files\RustMusic\rustmusic.exe",
+            r"C:\Users\张三\AppData\Local\Temp\Yimai_0.1.2.0_x64-setup.exe",
+            r"C:\Program Files\Yimai",
+            r"C:\Program Files\Yimai\yimai.exe",
         );
         // 落盘供 PowerShell 解析器做语法校验（UTF-8 BOM，与真实写入一致）
-        let dump = std::env::temp_dir().join("rustmusic-update-script-test.ps1");
+        let dump = std::env::temp_dir().join("yimai-update-script-test.ps1");
         std::fs::write(&dump, format!("\u{feff}{s}")).unwrap();
-        assert!(s.contains(r"'C:\Users\张三\AppData\Local\Temp\RustMusic_0.1.2.0_x64-setup.exe'"));
+        assert!(s.contains(r"'C:\Users\张三\AppData\Local\Temp\Yimai_0.1.2.0_x64-setup.exe'"));
         assert!(s.contains(r#"('/DIR="' + $dir + '"')"#));
-        assert!(s.contains("'C:\\Program Files\\RustMusic'"));
-        assert!(s.contains("Get-Process -Name 'RustMusic_0.1.2.0_x64-setup'"));
+        assert!(s.contains("'C:\\Program Files\\Yimai'"));
+        assert!(s.contains("Get-Process -Name 'Yimai_0.1.2.0_x64-setup'"));
         // 单引号转义：路径里的 ' 必须 doubled，避免破坏 PS 字符串
-        let q = build_update_script("C:\\it's\\setup.exe", "C:\\app", "C:\\app\\rustmusic.exe");
+        let q = build_update_script("C:\\it's\\setup.exe", "C:\\app", "C:\\app\\yimai.exe");
         assert!(q.contains("'C:\\it''s\\setup.exe'"));
     }
 }

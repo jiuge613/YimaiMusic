@@ -27,11 +27,11 @@ export const ACCENTS: AccentColor[] = [
 ];
 
 const CUSTOM_KEY_PREFIX = "custom:";
-const CUSTOM_HEX_KEY = "rustmusic.accent.custom";
+const CUSTOM_HEX_KEY = "yimai.accent.custom";
 
 // ---------- 桌面歌词配色 ----------
 
-const DLYRICS_COLOR_KEY = "rustmusic.dlyrics.colors";
+const DLYRICS_COLOR_KEY = "yimai.dlyrics.colors";
 
 export interface DesktopLyricsColors {
   sung: string; // 已唱（卡拉OK 染色）
@@ -68,7 +68,7 @@ export function saveDesktopLyricsColors(c: DesktopLyricsColors) {
 // 三色为空字符串时表示"跟随主题"：已唱跟强调色（--accent-strong），
 // 未唱跟正文色（--ink），下一句跟次级文字色（--ink-2）
 
-const LYRICS_COLOR_KEY = "rustmusic.lyrics.colors";
+const LYRICS_COLOR_KEY = "yimai.lyrics.colors";
 
 export interface LyricPageColors {
   sung: string; // 已唱（当前行卡拉OK 染色）
@@ -170,8 +170,8 @@ function hslToHex(h: number, s: number, l: number): string {
   return `#${f(0)}${f(8)}${f(4)}`;
 }
 
-const THEME_KEY = "rustmusic.theme";
-const ACCENT_KEY = "rustmusic.accent";
+const THEME_KEY = "yimai.theme";
+const ACCENT_KEY = "yimai.accent";
 
 function hexToRgb(hex: string): [number, number, number] {
   const h = hex.replace("#", "");

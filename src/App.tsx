@@ -198,7 +198,7 @@ export default function App() {
         <div className="animate-pulse">
           <Logo size={64} />
         </div>
-        <div className="text-[13px] text-[var(--ink-2)]">RustMusic 正在启动…</div>
+        <div className="text-[13px] text-[var(--ink-2)]">Yimai 正在启动…</div>
       </div>
     );
   }

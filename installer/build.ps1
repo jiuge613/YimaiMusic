@@ -1,8 +1,8 @@
-﻿# RustMusic Windows 安装包一键打包（Inno Setup）
+﻿# Yimai Windows 安装包一键打包（Inno Setup）
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File installer\build.ps1              # 构建产物 + 打包
 #   powershell -ExecutionPolicy Bypass -File installer\build.ps1 -SkipBuild   # 跳过构建，只用现有产物打包
-# 输出：installer\output\RustMusic_<版本>_x64-setup.exe
+# 输出：installer\output\Yimai_<版本>_x64-setup.exe
 
 param([switch]$SkipBuild)
 
@@ -20,12 +20,12 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw "tauri build 失败" }
 }
 
-$Exe = Join-Path $Root "src-tauri\target\release\rustmusic.exe"
+$Exe = Join-Path $Root "src-tauri\target\release\yimai.exe"
 if (-not (Test-Path $Exe)) {
     throw "未找到编译产物：$Exe（请先运行 tauri build）"
 }
 
-& $Iscc (Join-Path $PSScriptRoot "RustMusic.iss")
+& $Iscc (Join-Path $PSScriptRoot "Yimai.iss")
 if ($LASTEXITCODE -ne 0) { throw "ISCC 打包失败" }
 
 $Installer = Get-ChildItem (Join-Path $Root "installer\output\*.exe") |
