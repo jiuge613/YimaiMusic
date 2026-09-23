@@ -32,7 +32,8 @@ PrivilegesRequiredOverridesAllowed=dialog
 ShowLanguageDialog=no
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; 语言文件随仓库分发（installer\languages\），不依赖本机 Inno Setup 是否安装多语言包
+Name: "chinesesimplified"; MessagesFile: "languages\ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
