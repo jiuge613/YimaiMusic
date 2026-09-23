@@ -1,6 +1,6 @@
 [package]
 name = "yimai"
-version = "0.1.5"
+version = "0.1.6"
 description = "Yimai - 精美的高性能音乐播放器"
 authors = ["Yimai"]
 license = "Apache-2.0"
@@ -10,7 +10,8 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
+# image-png：托盘图标从 1024px 的 icon.png 高清解码（避免默认窗口图标取 ICO 低尺寸图层在高 DPI 下模糊）
+tauri = { version = "2", features = ["tray-icon", "protocol-asset", "image-png"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,8 +1,9 @@
 /**
  * 皮肤系统：整幅背景场景（矢量手绘 SVG），替换主界面的默认氛围背景。
  *
- * - 每套皮肤是一份 1600×1000 的 SVG 场景（多层渐变 + 剪影 + 氛围元素），
+ * - 大多数皮肤是一份 1600×1000 的 SVG 场景（多层渐变 + 剪影 + 氛围元素），
  *   以 data URI 作为背景图，background-size: cover 随窗口裁切；
+ *   位图皮肤（image 字段）则直接引用 public 下的静态图片资源；
  * - 皮肤之上仍叠加：主题化压暗/提亮纱（--skin-scrim，保证两种主题下
  *   文字可读）、封面取色微光、暗角与噪点——玻璃面板透出的是"加了音乐
  *   氛围光的壁纸"而非一张死图；
@@ -14,7 +15,9 @@ export interface Skin {
   name: string;
   desc: string;
   /** 完整 SVG 源码（单引号属性，无文字，纯矢量场景） */
-  svg: string;
+  svg?: string;
+  /** 位图背景（相对 public 的路径，如 /skins/xiaomei.jpg）；与 svg 二选一，image 优先 */
+  image?: string;
   /** 深色主题的纱：压暗背景保证浅色文字可读（按场景明暗单独调） */
   scrimDark: string;
   /** 浅色主题的纱：提亮背景保证深色文字可读（按场景明暗单独调） */
@@ -513,6 +516,12 @@ export const SKINS: Skin[] = [
     key: "firefly", name: "萤火", desc: "夏夜塘畔 · 流萤点点", svg: FIREFLY,
     scrimDark: darkScrim(0.28, 0.46, 0.56), scrimLight: lightScrim(0.54, 0.66),
   },
+  {
+    // 位图皮肤：背景为核心资源（public/skins/xiaomei.jpg），随构建打包进 dist
+    key: "xiaomei", name: "小美", desc: "樱树之下 · 一抹绯色", image: "/skins/xiaomei.jpg",
+    // 原图近黑底、人物居中偏右：深色主题轻压暗即可，浅色主题重提亮保文字
+    scrimDark: darkScrim(0.06, 0.16, 0.3), scrimLight: lightScrim(0.72, 0.82),
+  },
 ];
 
 const SKIN_KEY = "yimai.skin";
@@ -520,14 +529,20 @@ export const DEFAULT_SKIN = "default";
 
 const URI_CACHE = new Map<string, string>();
 
-/** 皮肤背景的 data URI；默认皮肤返回 null（走内置渐变氛围） */
+/** 皮肤背景的 data URI / 资源 URL；默认皮肤返回 null（走内置渐变氛围） */
 export function skinUri(key: string): string | null {
   if (!key || key === DEFAULT_SKIN) return null;
   const cached = URI_CACHE.get(key);
   if (cached) return cached;
   const skin = SKINS.find((s) => s.key === key);
   if (!skin) return null;
-  const uri = `url("data:image/svg+xml,${encodeURIComponent(skin.svg)}")`;
+  // 位图皮肤：直接引用 public 下的静态资源（Vite 构建时拷入 dist，路径随 base）
+  let uri: string;
+  if (skin.image) {
+    uri = `url("${skin.image}")`;
+  } else {
+    uri = `url("data:image/svg+xml,${encodeURIComponent(skin.svg ?? "")}")`;
+  }
   URI_CACHE.set(key, uri);
   return uri;
 }

@@ -275,8 +275,13 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 
     let menu = Menu::with_items(app, &[&show, &sep1, &pp, &prev, &next, &sep2, &quit])?;
 
+    // 托盘图标：从 1024px 的 icon.png 高清解码，由系统按托盘 DPI 选取尺寸缩放，
+    // 避免 default_window_icon 在高 DPI 下放大 ICO 低尺寸图层导致模糊。
+    let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
+        .expect("failed to decode tray icon");
+
     TrayIconBuilder::with_id("main-tray")
-        .icon(app.default_window_icon().expect("missing app icon").clone())
+        .icon(tray_icon)
         .tooltip("Yimai")
         .menu(&menu)
         .show_menu_on_left_click(false)

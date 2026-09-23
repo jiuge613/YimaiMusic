@@ -47,6 +47,9 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+; 刷新 Windows 图标/缩略图缓存（不重启 explorer）：避免升级后任务栏、
+; 桌面快捷方式仍显示旧版本图标的残影
+Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
