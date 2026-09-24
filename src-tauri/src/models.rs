@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
@@ -93,6 +93,64 @@ pub struct SourceItem {
     pub url: String,
     pub title: String,
     pub created_at: i64,
+}
+
+/// LX 兼容音源声明的一个平台（脚本 sources 块或 platforms.php 的条目）
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LxPlatform {
+    /// 平台代码：wy / tx / kw / kg / mg / joox …
+    pub code: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub actions: Vec<String>,
+    #[serde(default)]
+    pub qualitys: Vec<String>,
+}
+
+/// 音源管理列表条目（lx_sources 表）
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LxSourceItem {
+    pub id: i64,
+    /// script = 本地/订阅音源脚本；network = 直接登记的接口地址
+    pub kind: String,
+    pub name: String,
+    /// 取链接口基址（无尾斜杠），所有请求发往 {base}/url.php 等
+    pub base_url: String,
+    /// script 类型保留原始脚本文本（重新解析 / 查看用）；network 为空
+    #[serde(default)]
+    pub origin: String,
+    /// 平台与音质契约（JSON 数组）
+    #[serde(default)]
+    pub platforms: Vec<LxPlatform>,
+    pub enabled: bool,
+    pub created_at: i64,
+}
+
+/// 排行榜 / 搜索结果中的一首歌（统一结构）
+///
+/// 来源可能是音源接口（search.php）或内置平台（网易云 / QQ / 酷狗），
+/// 前端只认这一份结构；`platform` 决定取链时走哪个平台代码。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LxSearchSong {
+    /// 曲目 ID（取链用；各平台语义不同：网易云=数字 id、QQ=songmid、酷狗=hash）
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub artist: String,
+    #[serde(default)]
+    pub album: String,
+    #[serde(default)]
+    pub duration_ms: u64,
+    /// 平台代码：wy / tx / kg / kw / mg …
+    #[serde(default)]
+    pub platform: String,
+    /// 取链扩展上下文（酷狗 hash / QQ media_mid 等），原样透传给 url.php
+    #[serde(default)]
+    pub extra: String,
 }
 
 #[derive(Serialize, Clone, Debug)]

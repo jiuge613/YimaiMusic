@@ -3,7 +3,9 @@
  *
  * - 大多数皮肤是一份 1600×1000 的 SVG 场景（多层渐变 + 剪影 + 氛围元素），
  *   以 data URI 作为背景图，background-size: cover 随窗口裁切；
- *   位图皮肤（image 字段）则直接引用 public 下的静态图片资源；
+ * - 位图皮肤（image 字段，如"小美"）引用 public 下的静态图片资源，
+ *   由 App 的 DynamicBackdrop 以「底层模糊铺满 + 前景 contain 完整显示」
+ *   的双层策略渲染——方图/竖图在宽窗口下 cover 会裁掉大半画面，故不走 cover；
  * - 皮肤之上仍叠加：主题化压暗/提亮纱（--skin-scrim，保证两种主题下
  *   文字可读）、封面取色微光、暗角与噪点——玻璃面板透出的是"加了音乐
  *   氛围光的壁纸"而非一张死图；
@@ -545,6 +547,14 @@ export function skinUri(key: string): string | null {
   }
   URI_CACHE.set(key, uri);
   return uri;
+}
+
+/** 位图皮肤的原图资源路径（如 "/skins/xiaomei.jpg"）；非位图皮肤返回 null。
+ *  调用方据此切换适配策略：位图用「模糊铺满 + contain 完整显示」双层渲染，
+ *  避免 cover 在宽窗口下把方图/竖图裁掉大半。 */
+export function skinImage(key: string): string | null {
+  const skin = SKINS.find((s) => s.key === key);
+  return skin?.image ?? null;
 }
 
 export function applySkin(key: string) {

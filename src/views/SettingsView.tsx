@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  FileUp,
+  FlaskConical,
   Folder,
   FolderOpen,
   FolderPlus,
   Headphones,
+  Link2,
   Loader2,
   RefreshCw,
   RotateCcw,
@@ -13,6 +16,7 @@ import {
 } from "lucide-react";
 import { useStore } from "../store";
 import { api } from "../api";
+import type { LxSourceItem } from "../types";
 import {
   ACCENTS,
   loadCustomAccentHex,
@@ -435,6 +439,9 @@ export default function SettingsView() {
           )}
         </section>
 
+        {/* 音源管理 */}
+        <SourceManagerSection />
+
         {/* 均衡器 */}
         <section style={{ ["--row-idx" as string]: 3 }} className="anim-row glass rounded-2xl p-5">
           <div className="flex items-center justify-between mb-4">
@@ -689,8 +696,314 @@ export default function SettingsView() {
   );
 }
 
-/** 垂直滑块（均衡器用） */
-function VSlider({
+/** 音源管理：LX 兼容脚本（本地导入/粘贴）与网络接口音源的导入、启停、测试、删除。
+    取链等网络操作全部走 Rust 后端命令（规避 WebView 跨域限制）。 */
+function SourceManagerSection() {
+  const [sources, setSources] = useState<LxSourceItem[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  // 'script' | 'network' | null —— 当前展开的添加面板
+  const [mode, setMode] = useState<"script" | "network" | null>(null);
+  const [scriptText, setScriptText] = useState("");
+  const [networkUrl, setNetworkUrl] = useState("");
+  const [busyScript, setBusyScript] = useState(false);
+  const [busyNetwork, setBusyNetwork] = useState(false);
+  const [testingId, setTestingId] = useState<number | null>(null);
+
+  const toast = (msg: string, kind: "success" | "error" = "success") =>
+    useStore.getState().toast(msg, kind);
+
+  const reload = async () => {
+    try {
+      setSources(await api.lxListSources());
+    } catch (e) {
+      toast(String(e), "error");
+    } finally {
+      setLoaded(true);
+    }
+  };
+
+  useEffect(() => {
+    reload();
+  }, []);
+
+  const pickScriptFile = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: false,
+        title: "选择音源脚本文件（.js）",
+        filters: [{ name: "音源脚本", extensions: ["js", "txt"] }],
+      });
+      if (!selected || typeof selected !== "string") return;
+      setScriptText(await api.lxReadScriptFile(selected));
+      toast("脚本已读取，确认无误后点击导入");
+    } catch (e) {
+      toast(String(e), "error");
+    }
+  };
+
+  const importScript = async () => {
+    if (!scriptText.trim()) {
+      toast("请先选择脚本文件或粘贴脚本内容", "error");
+      return;
+    }
+    setBusyScript(true);
+    try {
+      const r = await api.lxAddScriptSource(scriptText);
+      toast(r.created ? `已导入「${r.name}」` : `已更新「${r.name}」的脚本内容`);
+      setScriptText("");
+      setMode(null);
+      reload();
+    } catch (e) {
+      // 后端已给出具体原因（非 LX 脚本 / 缺 musicUrl / 无法定位接口）
+      toast(String(e), "error");
+    } finally {
+      setBusyScript(false);
+    }
+  };
+
+  const addNetwork = async () => {
+    if (!networkUrl.trim()) {
+      toast("请填写音源地址", "error");
+      return;
+    }
+    setBusyNetwork(true);
+    try {
+      const r = await api.lxAddNetworkSource(networkUrl.trim());
+      toast(
+        r.created
+          ? `已添加「${r.name}」（${r.via}）`
+          : `已更新「${r.name}」（${r.via}）`
+      );
+      setNetworkUrl("");
+      setMode(null);
+      reload();
+    } catch (e) {
+      // 含超时 / 域名解析失败 / 非音源接口等场景化提示
+      toast(String(e), "error");
+    } finally {
+      setBusyNetwork(false);
+    }
+  };
+
+  const toggle = async (s: LxSourceItem) => {
+    try {
+      await api.lxSetSourceEnabled(s.id, !s.enabled);
+      setSources((list) =>
+        list.map((x) => (x.id === s.id ? { ...x, enabled: !s.enabled } : x))
+      );
+    } catch (e) {
+      toast(String(e), "error");
+    }
+  };
+
+  const remove = async (s: LxSourceItem) => {
+    try {
+      await api.lxDeleteSource(s.id);
+      setSources((list) => list.filter((x) => x.id !== s.id));
+      toast(`已删除「${s.name}」`);
+    } catch (e) {
+      toast(String(e), "error");
+    }
+  };
+
+  /** 端到端测试：真实调一次取链接口，验证「源 → 直链」整条链路可用 */
+  const testSource = async (s: LxSourceItem) => {
+    setTestingId(s.id);
+    try {
+      const code = s.platforms.find((p) => p.code === "wy")?.code
+        ?? s.platforms[0]?.code
+        ?? "wy";
+      const url = await api.lxResolveUrl({
+        sourceId: s.id,
+        platform: code,
+        songId: "33894312",
+        quality: "320k",
+      });
+      toast(
+        `测试成功（${code}）：${url.length > 72 ? url.slice(0, 72) + "…" : url}`
+      );
+    } catch (e) {
+      toast(String(e), "error");
+    } finally {
+      setTestingId(null);
+    }
+  };
+
+  return (
+    <section style={{ ["--row-idx" as string]: 2.5 }} className="anim-row glass rounded-2xl p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-[14.5px] font-semibold">
+          音源管理
+          <span className="ml-2 text-[11.5px] font-normal text-[var(--ink-2)]">
+            LX 兼容脚本 / 网络接口
+          </span>
+        </h2>
+        <div className="flex items-center gap-2">
+          <button
+            className={`btn-secondary !py-1.5 !px-3 ${mode === "script" ? "!bg-[var(--accent-weak)]" : ""}`}
+            onClick={() => setMode(mode === "script" ? null : "script")}
+          >
+            <FileUp size={12.5} />
+            导入脚本
+          </button>
+          <button
+            className={`btn-primary !py-1.5 !px-3 ${mode === "network" ? "!bg-[var(--accent-strong)]" : ""}`}
+            onClick={() => setMode(mode === "network" ? null : "network")}
+          >
+            <Link2 size={12.5} />
+            添加网络源
+          </button>
+        </div>
+      </div>
+
+      {/* 导入本地脚本：选文件或粘贴内容 */}
+      {mode === "script" && (
+        <div className="mb-3 rounded-xl border border-[var(--line)] bg-white/[0.02] p-3">
+          <textarea
+            value={scriptText}
+            onChange={(e) => setScriptText(e.target.value)}
+            placeholder="粘贴音源脚本内容（如 source.js 的完整文本）…"
+            rows={5}
+            className="w-full rounded-lg bg-[var(--shade)] border border-[var(--line)] px-2.5 py-2 text-[12px] text-[var(--ink)] outline-none focus:border-[rgba(240,162,74,0.45)] font-mono resize-y"
+          />
+          <div className="flex items-center gap-2 mt-2">
+            <button className="btn-secondary !py-1.5 !px-3" onClick={pickScriptFile}>
+              <Folder size={12.5} />
+              选择本地文件
+            </button>
+            <button
+              className="btn-primary !py-1.5 !px-3"
+              onClick={importScript}
+              disabled={busyScript}
+            >
+              {busyScript ? <Loader2 size={12.5} className="animate-spin" /> : <FileUp size={12.5} />}
+              {busyScript ? "解析中…" : "校验并导入"}
+            </button>
+          </div>
+          <p className="text-[11.5px] text-[var(--ink-3)] mt-2">
+            导入时会校验脚本格式：必须引用 globalThis.lx、声明 musicUrl 动作，并解析出取链接口地址；
+            含加密运算、非 HTTP 接口型的脚本暂不支持，会给出明确报错。
+          </p>
+        </div>
+      )}
+
+      {/* 添加网络源：拉取 + 探测校验 */}
+      {mode === "network" && (
+        <div className="mb-3 rounded-xl border border-[var(--line)] bg-white/[0.02] p-3">
+          <div className="flex items-center gap-2">
+            <Link2 size={13} className="text-[var(--ink-2)] shrink-0" />
+            <input
+              value={networkUrl}
+              onChange={(e) => setNetworkUrl(e.target.value)}
+              placeholder="https://music.example.com"
+              className="flex-1 h-9 rounded-lg bg-[var(--shade)] border border-[var(--line)] px-2.5 text-[12.5px] text-[var(--ink)] outline-none focus:border-[rgba(240,162,74,0.45)]"
+              onKeyDown={(e) => e.key === "Enter" && addNetwork()}
+            />
+            <button
+              className="btn-primary !py-1.5 !px-3"
+              onClick={addNetwork}
+              disabled={busyNetwork}
+            >
+              {busyNetwork ? <Loader2 size={12.5} className="animate-spin" /> : <Link2 size={12.5} />}
+              {busyNetwork ? "探测中…" : "拉取并校验"}
+            </button>
+          </div>
+          <p className="text-[11.5px] text-[var(--ink-3)] mt-2">
+            支持两类地址：音源站根地址（自动探测 platforms.php / url.php 接口，示例
+            https://music.example.com）或 .js 音源脚本订阅链接（拉取后解析）。
+            探测超时约 25 秒，失败会提示具体原因。
+          </p>
+        </div>
+      )}
+
+      {/* 音源列表 */}
+      {sources.length ? (
+        <div className="flex flex-col gap-1.5">
+          {sources.map((s) => {
+            const platChips = s.platforms
+              .map((p) => p.name || p.code)
+              .join(" / ");
+            return (
+              <div
+                key={s.id}
+                className="group flex items-center gap-2.5 px-3 py-2 rounded-lg bg-white/[0.03] hover:bg-[var(--shade)] transition-colors"
+              >
+                <span
+                  className={`shrink-0 text-[10.5px] px-1.5 py-0.5 rounded ${
+                    s.kind === "script"
+                      ? "bg-[var(--accent-weak)] text-[var(--accent-strong)]"
+                      : "bg-[var(--shade-strong)] text-[var(--ink-2)]"
+                  }`}
+                >
+                  {s.kind === "script" ? "脚本" : "网络"}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[12.5px] truncate ${s.enabled ? "text-[var(--ink)]" : "text-[var(--ink-3)] line-through"}`}>
+                      {s.name}
+                    </span>
+                    <button
+                      className="btn-ghost w-6 h-6 shrink-0 opacity-0 group-hover:opacity-100"
+                      onClick={() => testSource(s)}
+                      disabled={testingId === s.id}
+                      title="测试取链（真实调用一次接口拉取直链）"
+                    >
+                      {testingId === s.id ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <FlaskConical size={12} />
+                      )}
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-[var(--ink-3)] truncate">
+                    {s.baseUrl}
+                    {platChips ? ` · ${platChips}` : ""}
+                    {!s.platforms.length ? " · 未声明平台（url.php 接口）" : ""}
+                  </div>
+                </div>
+                <button
+                  className={`relative shrink-0 w-10 h-[22px] rounded-full transition-colors ${
+                    s.enabled ? "bg-[var(--accent)]" : "bg-[var(--shade-strong)]"
+                  }`}
+                  onClick={() => toggle(s)}
+                  title={s.enabled ? "停用" : "启用"}
+                >
+                  <span
+                    className={`absolute top-[3px] w-4 h-4 rounded-full bg-white shadow transition-all ${
+                      s.enabled ? "left-[21px]" : "left-[3px]"
+                    }`}
+                  />
+                </button>
+                <button
+                  className="btn-ghost w-7 h-7 shrink-0 opacity-0 group-hover:opacity-100 hover:!text-rose-400"
+                  onClick={() => remove(s)}
+                  title="删除该音源"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="text-[12.5px] text-[var(--ink-2)] py-2">
+          {loaded
+            ? "还没有音源。可导入 LX 音源脚本，或添加网络音源地址。"
+            : "加载中…"}
+        </div>
+      )}
+
+      <p className="text-[11.5px] text-[var(--ink-3)] mt-2">
+        网络源接入要求：接口遵循 LX 协议（GET /url.php?source=&amp;id=&amp;quality= 返回
+        {"{"}code:0,data:{"{url}"}{"}"}）；跨域无需关心——所有请求由本机后端发起。
+        取链得到的直链由播放器下载缓存后解码播放（与「在线音源」直链一致）。
+      </p>
+    </section>
+  );
+}
+
+/** 垂直滑块（均衡器用） */function VSlider({
   value,
   min,
   max,

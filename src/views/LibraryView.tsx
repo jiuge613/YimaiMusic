@@ -22,7 +22,7 @@ const SORTS: { key: SortKey; label: string }[] = [
 ];
 
 const META: Record<Mode, { title: string; sub: string; icon: typeof Library }> = {
-  library: { title: "资料库", sub: "你的全部音乐", icon: Library },
+  library: { title: "本地音乐", sub: "你的全部音乐", icon: Library },
   liked: { title: "我喜欢", sub: "收藏的心动之歌", icon: Heart },
   recent: { title: "最近播放", sub: "刚刚听过的旋律", icon: Clock3 },
 };
@@ -441,7 +441,7 @@ export default function LibraryView({ mode }: { mode: Mode }) {
             onDragReorder={manualActive ? onDragReorder : undefined}
             emptyHint={
               mode === "library"
-                ? "资料库还是空的"
+                ? "本地音乐库还是空的"
                 : mode === "liked"
                   ? "还没有喜欢的音乐"
                   : "还没有播放记录"
@@ -451,7 +451,7 @@ export default function LibraryView({ mode }: { mode: Mode }) {
                 ? { label: "添加音乐文件夹", onClick: addFolderByDialog }
                 : mode === "liked"
                   ? {
-                      label: "去资料库逛逛",
+                      label: "去本地音乐逛逛",
                       onClick: () => useStore.getState().setView("library"),
                     }
                   : undefined

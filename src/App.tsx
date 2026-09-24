@@ -13,15 +13,18 @@ import LibraryView from "./views/LibraryView";
 import PlaylistDetail from "./views/PlaylistDetail";
 import SourcesView from "./views/SourcesView";
 import SettingsView from "./views/SettingsView";
+import RankingView from "./views/RankingView";
 import OnlineLibraryView from "./views/NeteaseView";
 import { coverSrc } from "./api";
 import { extractColor } from "./utils";
-import { skinUri } from "./skins";
+import { skinImage, skinUri } from "./skins";
 
 function DynamicBackdrop() {
   const cover = useStore((s) => s.current?.cover);
   const skin = useStore((s) => s.skin);
   const skinUrl = skinUri(skin);
+  // 位图皮肤（如"小美"）：contain 完整显示 + 底层模糊铺满；SVG 皮肤维持 cover
+  const skinImg = skinImage(skin);
   // http 封面直接用原始 URL，本地路径才走 asset 协议
   const url = cover
     ? cover.startsWith("http://") || cover.startsWith("https://")
@@ -63,14 +66,40 @@ function DynamicBackdrop() {
       {/* 底层：皮肤背景图（启用时替代默认渐变底），或主题默认氛围 */}
       {skinUrl ? (
         <>
-          <div
-            className="absolute inset-0 transition-all duration-500"
-            style={{
-              backgroundImage: skinUrl,
-              backgroundSize: "cover",
-              backgroundPosition: "center",
-            }}
-          />
+          {skinImg ? (
+            <>
+              {/* 底层：同一张图放大铺满 + 高斯模糊，填补 contain 两侧留白 */}
+              <div
+                className="absolute inset-0 transition-all duration-500"
+                style={{
+                  backgroundImage: skinUrl,
+                  backgroundSize: "cover",
+                  backgroundPosition: "center",
+                  filter: "blur(36px)",
+                  transform: "scale(1.15)",
+                }}
+              />
+              {/* 前景：backgroundSize: contain，原图完整可见，不裁切不变形 */}
+              <div
+                className="absolute inset-0 transition-all duration-500"
+                style={{
+                  backgroundImage: skinUrl,
+                  backgroundSize: "contain",
+                  backgroundPosition: "center",
+                  backgroundRepeat: "no-repeat",
+                }}
+              />
+            </>
+          ) : (
+            <div
+              className="absolute inset-0 transition-all duration-500"
+              style={{
+                backgroundImage: skinUrl,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+              }}
+            />
+          )}
           {/* 主题纱：暗色压暗 / 浅色洗成粉彩，保证前景文字可读 */}
           <div className="absolute inset-0" style={{ background: "var(--skin-scrim)" }} />
         </>
@@ -231,6 +260,7 @@ export default function App() {
               {view === "recent" && <LibraryView mode="recent" />}
               {view === "playlist" && <PlaylistDetail id={viewParam} />}
               {view === "sources" && <SourcesView />}
+              {view === "ranking" && <RankingView />}
               {view === "netease" && <OnlineLibraryView source="netease" />}
               {view === "qq" && <OnlineLibraryView source="qq" />}
               {view === "kugou" && <OnlineLibraryView source="kugou" />}

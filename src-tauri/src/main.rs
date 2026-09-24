@@ -7,6 +7,7 @@ mod eq;
 mod kugou;
 mod library;
 mod lyrics;
+mod lxsource;
 mod models;
 mod netease;
 mod qq;
@@ -515,6 +516,15 @@ fn main() {
             commands::list_sources,
             commands::add_source,
             commands::delete_source,
+            commands::lx_list_sources,
+            commands::lx_add_script_source,
+            commands::lx_add_network_source,
+            commands::lx_set_source_enabled,
+            commands::lx_delete_source,
+            commands::lx_read_script_file,
+            commands::lx_resolve_url,
+            commands::lx_search,
+            commands::lx_play_song,
             commands::play_track,
             commands::play_source,
             commands::netease_search,

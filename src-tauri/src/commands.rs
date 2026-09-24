@@ -314,6 +314,548 @@ pub async fn delete_source(state: State<'_, AppState>, id: i64) -> Result<(), St
     Ok(())
 }
 
+// ---------- 音源管理（LX 兼容脚本 / 网络接口音源） ----------
+
+use crate::lxsource;
+
+/// 音源管理列表
+#[tauri::command]
+pub async fn lx_list_sources(state: State<'_, AppState>) -> Result<Vec<LxSourceItem>, String> {
+    let conn = state.db.lock();
+    Ok(db::lx_list_sources(&conn))
+}
+
+/// 导入本地音源脚本（选文件读出的内容 / 粘贴的脚本文本）：
+/// 静态解析契约后入库；解析失败返回带原因的中文错误。
+#[tauri::command]
+pub async fn lx_add_script_source(
+    state: State<'_, AppState>,
+    content: String,
+) -> Result<serde_json::Value, String> {
+    let parsed = lxsource::parse_script(&content)?;
+    let platforms_json = serde_json::to_string(&parsed.platforms).unwrap_or_else(|_| "[]".into());
+    let conn = state.db.lock();
+    let (id, created) = db::lx_add_source(
+        &conn,
+        "script",
+        &parsed.name,
+        &parsed.base_url,
+        &content,
+        &platforms_json,
+    )?;
+    Ok(json!({ "id": id, "created": created, "name": parsed.name, "baseUrl": parsed.base_url }))
+}
+
+/// 添加网络音源（音源站根地址或 .js 订阅链接）：拉取 + 探测校验后入库。
+#[tauri::command]
+pub async fn lx_add_network_source(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<serde_json::Value, String> {
+    let outcome = lxsource::probe_source(&url)?;
+    let kind = if outcome.via == "音源脚本订阅" { "script" } else { "network" };
+    let platforms_json =
+        serde_json::to_string(&outcome.platforms).unwrap_or_else(|_| "[]".into());
+    let conn = state.db.lock();
+    let (id, created) = db::lx_add_source(
+        &conn,
+        kind,
+        &outcome.name,
+        &outcome.base_url,
+        &outcome.origin,
+        &platforms_json,
+    )?;
+    Ok(json!({
+        "id": id, "created": created, "kind": kind,
+        "name": outcome.name, "baseUrl": outcome.base_url,
+        "via": outcome.via, "platforms": outcome.platforms,
+    }))
+}
+
+/// 启用 / 禁用
+#[tauri::command]
+pub async fn lx_set_source_enabled(
+    state: State<'_, AppState>,
+    id: i64,
+    enabled: bool,
+) -> Result<(), String> {
+    let conn = state.db.lock();
+    db::lx_set_enabled(&conn, id, enabled)
+}
+
+/// 删除
+#[tauri::command]
+pub async fn lx_delete_source(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let conn = state.db.lock();
+    db::lx_delete_source(&conn, id);
+    Ok(())
+}
+
+/// 读取本地脚本文件文本（导入对话框选出的路径）。限制 1 MB、仅文本脚本。
+#[tauri::command]
+pub async fn lx_read_script_file(path: String) -> Result<String, String> {
+    let lower = path.to_lowercase();
+    if !lower.ends_with(".js") && !lower.ends_with(".txt") && !lower.ends_with(".json") {
+        return Err("请选择音源脚本文件（.js）".into());
+    }
+    let meta = std::fs::metadata(&path).map_err(|e| format!("读取文件失败: {e}"))?;
+    if meta.len() > 1024 * 1024 {
+        return Err("脚本文件超过 1 MB，疑似不是音源脚本".into());
+    }
+    std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {e}"))
+}
+
+/// 测试取链：真实调用 {base}/url.php 拉一次直链（不下载音频，只校验返回）。
+/// 供 UI「测试」按钮与后续播放链路集成使用。
+#[tauri::command]
+pub async fn lx_resolve_url(
+    state: State<'_, AppState>,
+    source_id: i64,
+    platform: String,
+    song_id: String,
+    quality: Option<String>,
+    extra: Option<String>,
+) -> Result<String, String> {
+    let base = {
+        let conn = state.db.lock();
+        let item = db::lx_list_sources(&conn)
+            .into_iter()
+            .find(|s| s.id == source_id)
+            .ok_or("音源不存在")?;
+        if !item.enabled {
+            return Err("该音源已停用，请先在设置中启用".into());
+        }
+        item.base_url
+    };
+    lxsource::music_url(
+        &base,
+        &platform,
+        &song_id,
+        quality.as_deref().unwrap_or("320k"),
+        extra.as_deref(),
+    )
+}
+
+// ---------- 排行榜（音源搜索 + 取链播放） ----------
+
+/// 选源：指定 id 优先；否则按平台能力匹配；都没有则取第一个启用的源
+fn pick_source(
+    sources: &[LxSourceItem],
+    source_id: Option<i64>,
+    platform: &str,
+) -> Option<LxSourceItem> {
+    if let Some(id) = source_id {
+        return sources.iter().find(|s| s.id == id).cloned();
+    }
+    if !platform.is_empty() {
+        if let Some(s) = sources
+            .iter()
+            .find(|s| s.platforms.iter().any(|p| p.code == platform))
+        {
+            return Some(s.clone());
+        }
+    }
+    sources.first().cloned()
+}
+
+/// 确定取链/搜索用的平台代码（未指定时取音源声明的第一个平台，兜底 wy）
+fn resolve_platform(source: &LxSourceItem, platform: &str) -> String {
+    if !platform.is_empty() {
+        return platform.to_string();
+    }
+    source
+        .platforms
+        .first()
+        .map(|p| p.code.clone())
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "wy".to_string())
+}
+
+/// 在音源声明的音质里挑一个：优先请求值，其次 320k / 128k，最后第一个
+fn pick_quality(source: &LxSourceItem, platform: &str, requested: &str) -> String {
+    let avail: Vec<String> = source
+        .platforms
+        .iter()
+        .find(|p| p.code == platform)
+        .map(|p| p.qualitys.clone())
+        .unwrap_or_default();
+    if avail.is_empty() {
+        return if requested.is_empty() {
+            "320k".to_string()
+        } else {
+            requested.to_string()
+        };
+    }
+    if avail.iter().any(|q| q == requested) {
+        return requested.to_string();
+    }
+    for want in ["320k", "192k", "128k", "flac"] {
+        if avail.iter().any(|q| q == want) {
+            return want.to_string();
+        }
+    }
+    avail.first().cloned().unwrap_or_else(|| "320k".to_string())
+}
+
+/// 内置平台搜索（音源未提供搜索接口时的兜底，保证排行榜始终可用）
+fn builtin_search(
+    state: &State<AppState>,
+    platform: &str,
+    keyword: &str,
+    limit: i64,
+) -> Result<Vec<LxSearchSong>, String> {
+    let code = match platform {
+        "wy" | "netease" => "wy",
+        "tx" | "qq" => "tx",
+        // 未知平台（kw/mg/…）与未指定平台：酷狗免登录通道最稳
+        _ => "kg",
+    };
+    match code {
+        "wy" => {
+            let music_u = netease_cookie(state);
+            let r = crate::netease::search(keyword, limit, 0, music_u.as_deref())?;
+            Ok(r.songs
+                .into_iter()
+                .map(|s| {
+                    // 先算完借用类字段再移动 s.name，避免部分移动后借用的编译错误
+                    let artist = s.artist_str();
+                    let album = s.album_name();
+                    let duration_ms = s.duration_ms().max(0) as u64;
+                    LxSearchSong {
+                        id: s.id.to_string(),
+                        title: s.name,
+                        artist,
+                        album,
+                        duration_ms,
+                        platform: "wy".into(),
+                        extra: String::new(),
+                    }
+                })
+                .collect())
+        }
+        "tx" => {
+            let songs = crate::qq::search(keyword, limit, 1)?;
+            Ok(songs
+                .into_iter()
+                .map(|s| LxSearchSong {
+                    id: s.id.clone(),
+                    title: s.name,
+                    artist: s.singer,
+                    album: s.album,
+                    duration_ms: s.duration_ms,
+                    platform: "tx".into(),
+                    extra: s.media_mid,
+                })
+                .collect())
+        }
+        _ => {
+            let songs = crate::kugou::search(keyword, 1)?;
+            Ok(songs
+                .into_iter()
+                .take(limit.max(1) as usize)
+                .map(|s| LxSearchSong {
+                    id: s.id.clone(),
+                    title: s.name,
+                    artist: s.singer,
+                    album: s.album,
+                    duration_ms: s.duration_ms,
+                    platform: "kg".into(),
+                    extra: s.id,
+                })
+                .collect())
+        }
+    }
+}
+
+/// 排行榜搜索：优先走已接入音源的 search.php，失败/无结果时回退内置平台搜索。
+/// 返回 `{ via, sourceId, sourceName, platform, songs, sourceError? }`。
+#[tauri::command]
+pub async fn lx_search(
+    state: State<'_, AppState>,
+    source_id: Option<i64>,
+    platform: Option<String>,
+    keyword: String,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let kw = keyword.trim().to_string();
+    if kw.is_empty() {
+        return Err("请输入搜索关键词".into());
+    }
+    let limit = limit.unwrap_or(30).clamp(1, 50);
+    let want_platform = platform.unwrap_or_default();
+    let sources = {
+        let conn = state.db.lock();
+        db::lx_enabled_sources(&conn)
+    };
+    let picked = pick_source(&sources, source_id, &want_platform);
+
+    let mut src_err: Option<String> = None;
+    let mut used_platform = want_platform.clone();
+    if let Some(s) = &picked {
+        let code = resolve_platform(s, &want_platform);
+        used_platform = code.clone();
+        match lxsource::search_songs(&s.base_url, &code, &kw, limit) {
+            Ok(songs) if !songs.is_empty() => {
+                let songs: Vec<LxSearchSong> = songs
+                    .into_iter()
+                    .map(|mut x| {
+                        x.platform = code.clone();
+                        x
+                    })
+                    .collect();
+                return Ok(json!({
+                    "via": "音源搜索",
+                    "sourceId": s.id,
+                    "sourceName": s.name,
+                    "platform": code,
+                    "songs": songs,
+                }));
+            }
+            // 音源返回空列表：交给内置兜底，最终以"无结果"呈现
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("[lxsource] 音源搜索失败（{}）: {e}", s.name);
+                src_err = Some(e);
+            }
+        }
+    }
+
+    match builtin_search(&state, &want_platform, &kw, limit) {
+        Ok(songs) => {
+            let used_platform = songs.first().map(|s| s.platform.clone()).unwrap_or(used_platform);
+            Ok(json!({
+                "via": if picked.is_some() { "内置平台搜索" } else { "内置平台搜索（未接入音源）" },
+                "sourceId": picked.as_ref().map(|s| s.id),
+                "sourceName": picked.as_ref().map(|s| s.name.clone()),
+                "platform": used_platform,
+                "songs": songs,
+                "sourceError": src_err,
+            }))
+        }
+        Err(e) => Err(match src_err {
+            Some(se) => format!("{se}；内置平台搜索同样失败：{e}"),
+            None => e,
+        }),
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LxPlaySongReq {
+    pub source_id: i64,
+    pub platform: String,
+    pub song_id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub artist: String,
+    #[serde(default)]
+    pub album: String,
+    #[serde(default)]
+    pub cover: String,
+    #[serde(default)]
+    pub duration_ms: u64,
+    /// 期望音质（320k / flac …）；留空时按设置与音源声明自动选
+    #[serde(default)]
+    pub quality: Option<String>,
+    /// 取链扩展上下文（酷狗 hash / QQ media_mid）
+    #[serde(default)]
+    pub extra: Option<String>,
+}
+
+/// 未接入音源时的播放回退：直接走内置平台取链（wy→网易云、tx→QQ、kg→酷狗）。
+/// 保证排行榜在未配置音源时也能播（酷狗匿名可用；网易云/QQ 需已登录）。
+fn builtin_play_song(state: &State<AppState>, req: &LxPlaySongReq) -> Result<(), String> {
+    let quality = {
+        let conn = state.db.lock();
+        db::get_setting(&conn, "quality").unwrap_or_else(|| "high".to_string())
+    };
+    let (url, kind, rid, media_mid, label) = match req.platform.as_str() {
+        "kg" => {
+            let (u, ext) = crate::kugou::song_url(&req.song_id, false)?;
+            (u, "kugou", req.song_id.clone(), String::new(), quality_tag(&ext, 128))
+        }
+        "wy" => {
+            let id: i64 = req
+                .song_id
+                .parse()
+                .map_err(|_| "网易云曲目 ID 无效，无法取链".to_string())?;
+            let music_u = netease_cookie(state);
+            let (u, br, ext) = crate::netease::song_url(id, music_u.as_deref(), &quality)?
+                .ok_or_else(|| "该歌曲暂无可播放链接（可能需要登录或有效 VIP 权益）".to_string())?;
+            (u, "netease", req.song_id.clone(), String::new(), quality_tag(&ext, br))
+        }
+        "tx" => {
+            let (musicid, musickey) = qq_credential(state)?;
+            let (u, ext) = crate::qq::song_url(
+                &req.song_id,
+                req.extra.as_deref().unwrap_or(""),
+                &musicid,
+                &musickey,
+                &quality,
+                false,
+            )?;
+            (
+                u,
+                "qq",
+                req.song_id.clone(),
+                req.extra.clone().unwrap_or_default(),
+                quality_tag(&ext, if quality == "standard" { 128 } else { 320 }),
+            )
+        }
+        _ => {
+            return Err(
+                "该曲目来自音源平台，当前未接入音源无法取链；请在设置 → 音源管理 中添加音源"
+                    .into(),
+            )
+        }
+    };
+    {
+        let conn = state.db.lock();
+        db::record_play_online(
+            &conn,
+            kind,
+            &rid,
+            &req.title,
+            &req.artist,
+            &req.album,
+            &req.cover,
+            req.duration_ms as i64,
+            &media_mid,
+            false,
+        );
+    }
+    let info = TrackInfo {
+        id: None,
+        kind: kind.into(),
+        path: String::new(),
+        title: req.title.clone(),
+        artist: req.artist.clone(),
+        album: req.album.clone(),
+        cover: req.cover.clone(),
+        duration_ms: req.duration_ms,
+        nid: None,
+        qid: None,
+        kgid: None,
+        quality: Some(label),
+    };
+    engine_clone(state).play_url(url, info)
+}
+
+/// 排行榜曲目播放：用已接入音源取链 → 走统一的在线播放链路（缓存 + 解码）。
+///
+/// 这是"音源管理"与播放链路的集成点：与网易云/QQ/酷狗在线播放共用
+/// `play_url`，因此进度、歌词、SMTC、最近播放等行为完全一致。
+#[tauri::command]
+pub async fn lx_play_song(state: State<'_, AppState>, req: LxPlaySongReq) -> Result<(), String> {
+    if req.song_id.trim().is_empty() {
+        return Err("歌曲 ID 无效，无法取链".into());
+    }
+    // 未接入音源（sourceId <= 0）：回退内置平台取链，保证页面开箱可用
+    if req.source_id <= 0 {
+        return builtin_play_song(&state, &req);
+    }
+    let (base, src_name, platforms) = {
+        let conn = state.db.lock();
+        let item = db::lx_list_sources(&conn)
+            .into_iter()
+            .find(|s| s.id == req.source_id)
+            .ok_or("音源不存在，请在设置 → 音源管理中重新添加")?;
+        if !item.enabled {
+            return Err("该音源已停用，请先在设置中启用".into());
+        }
+        (item.base_url, item.name, item.platforms)
+    };
+    let platform = {
+        let src_item = LxSourceItem {
+            id: req.source_id,
+            kind: "network".into(),
+            name: src_name.clone(),
+            base_url: base.clone(),
+            origin: String::new(),
+            platforms: platforms.clone(),
+            enabled: true,
+            created_at: 0,
+        };
+        resolve_platform(&src_item, &req.platform)
+    };
+    // 音质：请求值 → 设置映射 → 音源声明
+    let setting = {
+        let conn = state.db.lock();
+        db::get_setting(&conn, "quality").unwrap_or_else(|| "high".to_string())
+    };
+    let by_setting = match setting.as_str() {
+        "lossless" | "flac" | "sq" => "flac",
+        "standard" | "normal" | "lq" => "128k",
+        _ => "320k",
+    };
+    let want = req.quality.clone().filter(|q| !q.is_empty()).unwrap_or_else(|| by_setting.to_string());
+    let quality = {
+        let src_item = LxSourceItem {
+            id: req.source_id,
+            kind: "network".into(),
+            name: src_name.clone(),
+            base_url: base.clone(),
+            origin: String::new(),
+            platforms,
+            enabled: true,
+            created_at: 0,
+        };
+        pick_quality(&src_item, &platform, &want)
+    };
+
+    let url = lxsource::music_url(
+        &base,
+        &platform,
+        &req.song_id,
+        &quality,
+        req.extra.as_deref(),
+    )?;
+
+    // 最近播放：只有能映射回内置平台的曲目才记录（否则前端无法二次播放）
+    let kind = match platform.as_str() {
+        "wy" => Some("netease"),
+        "tx" => Some("qq"),
+        "kg" => Some("kugou"),
+        _ => None,
+    };
+    if let Some(k) = kind {
+        let conn = state.db.lock();
+        db::record_play_online(
+            &conn,
+            k,
+            &req.song_id,
+            &req.title,
+            &req.artist,
+            &req.album,
+            &req.cover,
+            req.duration_ms as i64,
+            req.extra.as_deref().unwrap_or(""),
+            false,
+        );
+    }
+
+    let info = TrackInfo {
+        id: None,
+        kind: "url".into(),
+        path: String::new(),
+        title: if req.title.is_empty() {
+            "未知曲目".to_string()
+        } else {
+            req.title
+        },
+        artist: req.artist,
+        album: req.album,
+        cover: req.cover,
+        duration_ms: req.duration_ms,
+        nid: None,
+        qid: None,
+        kgid: None,
+        quality: Some(quality.to_uppercase()),
+    };
+    engine_clone(&state).play_url(url, info)
+}
+
 // ---------- 播放控制 ----------
 
 #[tauri::command]

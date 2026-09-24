@@ -3369,40 +3369,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "yimai"
-version = "0.1.6"
-dependencies = [
- "aes",
- "base64 0.22.1",
- "filetime",
- "flate2",
- "hex",
- "image",
- "lofty",
- "md-5",
- "num-bigint",
- "parking_lot",
- "percent-encoding",
- "qrcode",
- "rand",
- "rayon",
- "regex",
- "rodio",
- "rusqlite",
- "serde",
- "serde_json",
- "sha1",
- "souvlaki",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "ureq",
- "walkdir",
- "webview2-com",
- "windows 0.61.3",
-]
-
-[[package]]
 name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4121,6 +4087,7 @@ dependencies = [
  "heck 0.5.0",
  "http",
  "http-range",
+ "image",
  "jni",
  "libc",
  "log",
@@ -5697,6 +5664,40 @@ dependencies = [
  "libc",
  "once_cell",
  "pkg-config",
+]
+
+[[package]]
+name = "yimai"
+version = "0.1.7"
+dependencies = [
+ "aes",
+ "base64 0.22.1",
+ "filetime",
+ "flate2",
+ "hex",
+ "image",
+ "lofty",
+ "md-5",
+ "num-bigint",
+ "parking_lot",
+ "percent-encoding",
+ "qrcode",
+ "rand",
+ "rayon",
+ "regex",
+ "rodio",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha1",
+ "souvlaki",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "ureq",
+ "walkdir",
+ "webview2-com",
+ "windows 0.61.3",
 ]
 
 [[package]]

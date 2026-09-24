@@ -13,6 +13,9 @@ import type {
   SettingsPayload,
   SourceItem,
   TrackMeta,
+  LxAddNetworkResult,
+  LxSourceItem,
+  LxSearchResult,
 } from "./types";
 
 export const api = {
@@ -47,6 +50,51 @@ export const api = {
   addSource: (url: string, title?: string) =>
     invoke<number>("add_source", { url, title: title ?? "" }),
   deleteSource: (id: number) => invoke<void>("delete_source", { id }),
+  // ---------- 音源管理（LX 兼容脚本 / 网络接口音源） ----------
+  lxListSources: () => invoke<LxSourceItem[]>("lx_list_sources"),
+  lxAddScriptSource: (content: string) =>
+    invoke<{ id: number; created: boolean; name: string; baseUrl: string }>(
+      "lx_add_script_source",
+      { content }
+    ),
+  lxAddNetworkSource: (url: string) =>
+    invoke<LxAddNetworkResult>("lx_add_network_source", { url }),
+  lxSetSourceEnabled: (id: number, enabled: boolean) =>
+    invoke<void>("lx_set_source_enabled", { id, enabled }),
+  lxDeleteSource: (id: number) => invoke<void>("lx_delete_source", { id }),
+  lxReadScriptFile: (path: string) => invoke<string>("lx_read_script_file", { path }),
+  lxResolveUrl: (args: {
+    sourceId: number;
+    platform: string;
+    songId: string;
+    quality?: string;
+    extra?: string;
+  }) => invoke<string>("lx_resolve_url", args),
+  /** 排行榜搜索：优先音源 search.php，失败回退内置平台（网易云/QQ/酷狗） */
+  lxSearch: (args: {
+    sourceId?: number | null;
+    platform?: string;
+    keyword: string;
+    limit?: number;
+  }) => invoke<LxSearchResult>("lx_search", {
+    sourceId: args.sourceId ?? null,
+    platform: args.platform ?? "",
+    keyword: args.keyword,
+    limit: args.limit ?? 30,
+  }),
+  /** 排行榜曲目播放：用指定音源取链后走统一在线播放链路 */
+  lxPlaySong: (req: {
+    sourceId: number;
+    platform: string;
+    songId: string;
+    title?: string;
+    artist?: string;
+    album?: string;
+    cover?: string;
+    durationMs?: number;
+    quality?: string;
+    extra?: string;
+  }) => invoke<void>("lx_play_song", req),
   neteaseSearch: (keyword: string, offset: number) =>
     invoke<{ total: number; songs: NeteaseTrack[] }>("netease_search", {
       keyword,

@@ -73,6 +73,62 @@ export interface SourceItem {
   createdAt: number;
 }
 
+/** LX 兼容音源声明的一个平台 */
+export interface LxPlatform {
+  code: string;
+  name: string;
+  actions: string[];
+  qualitys: string[];
+}
+
+/** 音源管理列表条目（设置模块） */
+export interface LxSourceItem {
+  id: number;
+  /** script = 本地/订阅脚本；network = 接口地址 */
+  kind: "script" | "network";
+  name: string;
+  baseUrl: string;
+  origin: string;
+  platforms: LxPlatform[];
+  enabled: boolean;
+  createdAt: number;
+}
+
+/** 添加网络音源的返回（含探测方式） */
+export interface LxAddNetworkResult {
+  id: number;
+  created: boolean;
+  kind: "script" | "network";
+  name: string;
+  baseUrl: string;
+  via: string;
+  platforms: LxPlatform[];
+}
+
+/** 排行榜 / 搜索结果里的一首歌（后端统一结构，来源可能是音源接口或内置平台） */
+export interface LxSearchSong {
+  id: string;
+  title: string;
+  artist?: string;
+  album?: string;
+  durationMs?: number;
+  /** 平台代码：wy / tx / kg / kw … */
+  platform?: string;
+  /** 取链扩展上下文（酷狗 hash / QQ media_mid） */
+  extra?: string;
+}
+
+/** 排行榜搜索返回 */
+export interface LxSearchResult {
+  via: string;
+  sourceId: number | null;
+  sourceName?: string | null;
+  platform: string;
+  songs: LxSearchSong[];
+  /** 音源自身搜索失败、已回退内置平台时的原因 */
+  sourceError?: string | null;
+}
+
 export interface LyricWord {
   startMs: number;
   endMs: number;
@@ -166,6 +222,7 @@ export type ViewName =
   | "liked"
   | "recent"
   | "sources"
+  | "ranking"
   | "netease"
   | "qq"
   | "kugou"

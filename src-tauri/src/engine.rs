@@ -602,7 +602,13 @@ impl Engine {
                 info.duration_ms = probe_duration(&cache);
             }
             *self.want_url.write() = None;
-            return self.play_file(info);
+            // 解码失败说明缓存内容不是有效音频（例如误把网页/接口响应存成了缓存）：
+            // 删除坏缓存，否则后续每次播放都会命中同一份坏文件
+            if let Err(e) = self.play_file(info) {
+                let _ = std::fs::remove_file(&cache);
+                return Err(e);
+            }
+            return Ok(());
         }
         *self.want_url.write() = Some(url.clone());
         // 同一缓存键已有下载在进行：只登记意图后返回，复用进行中的下载，
@@ -638,7 +644,15 @@ impl Engine {
                         if info.duration_ms == 0 {
                             info.duration_ms = probe_duration(&cache);
                         }
-                        let _ = engine.play_file(info);
+                        // 下载成功但解码失败 = 内容不是有效音频（多半是网页/接口响应），
+                        // 删除坏缓存并上报错误，避免坏文件常驻缓存被反复命中
+                        if let Err(e) = engine.play_file(info) {
+                            let _ = std::fs::remove_file(&cache);
+                            let _ = app.emit(
+                                "download://progress",
+                                serde_json::json!({ "url": url, "done": true, "error": e }),
+                            );
+                        }
                     }
                     // 下载成功后按上限清理（跳过正在播放/下载中的文件）
                     engine.evict_cache();
@@ -777,6 +791,17 @@ fn download_to(app: &AppHandle, url: &str, dest: &Path) -> Result<(), String> {
         .get(url)
         .call()
         .map_err(|e| format!("下载音源失败: {e}"))?;
+    // Content-Type 预检：网页/JSON/接口响应必然无法解码，提前给出可操作的提示
+    // （否则 symphonia 只会报模糊的 "Unrecognized format"）
+    let ctype = resp.header("content-type").unwrap_or("").to_ascii_lowercase();
+    if ctype.contains("text/html")
+        || ctype.contains("application/xhtml")
+        || ctype.contains("application/json")
+    {
+        return Err(format!(
+            "该地址返回的是网页/接口响应（{ctype}）而非音频文件：在线音源只支持音频直链（如 https://…/song.mp3）"
+        ));
+    }
     let total: u64 = resp
         .header("content-length")
         .and_then(|v| v.parse().ok())
@@ -797,6 +822,31 @@ fn download_to(app: &AppHandle, url: &str, dest: &Path) -> Result<(), String> {
     let mut buf = [0u8; 64 * 1024];
     let mut received: u64 = 0;
     let mut last_emit = std::time::Instant::now();
+    // 首块嗅探：Content-Type 不准但实际返回 HTML 的服务器（自建网盘/反代很常见）
+    let n0 = reader
+        .read(&mut buf)
+        .map_err(|e| format!("下载数据流中断: {e}"))?;
+    {
+        let head = &buf[..n0];
+        let starts = |sig: &[u8]| {
+            head.iter()
+                .position(|&b| b != 0xEF && b != 0xBB && b != 0xBF && !b.is_ascii_whitespace())
+                .map(|i| head[i..].len() >= sig.len() && head[i..i + sig.len()].eq_ignore_ascii_case(sig))
+                .unwrap_or(false)
+        };
+        if n0 > 0 && (starts(b"<!doctype") || starts(b"<html")) {
+            drop(file);
+            let _ = std::fs::remove_file(&part);
+            return Err(
+                "该地址返回的是网页（HTML）而非音频文件：在线音源只支持音频文件直链（如 https://…/song.mp3），不支持网站首页或 API 地址".into(),
+            );
+        }
+    }
+    if n0 > 0 {
+        file.write_all(&buf[..n0])
+            .map_err(|e| format!("写入缓存失败: {e}"))?;
+        received += n0 as u64;
+    }
     loop {
         let n = reader
             .read(&mut buf)

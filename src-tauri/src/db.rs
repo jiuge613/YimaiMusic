@@ -3,7 +3,7 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
-use crate::models::{Folder, Playlist, SourceItem, TrackMeta};
+use crate::models::{Folder, LxSourceItem, Playlist, SourceItem, TrackMeta};
 
 const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -58,6 +58,17 @@ CREATE TABLE IF NOT EXISTS sources (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   url TEXT UNIQUE NOT NULL,
   title TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0
+);
+-- 音源管理（LX 兼容脚本 / 网络接口音源）。platforms 存 JSON 数组
+CREATE TABLE IF NOT EXISTS lx_sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL DEFAULT 'network',
+  name TEXT NOT NULL DEFAULT '',
+  base_url TEXT NOT NULL,
+  origin TEXT NOT NULL DEFAULT '',
+  platforms TEXT NOT NULL DEFAULT '[]',
+  enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS stats (
@@ -701,6 +712,84 @@ pub fn get_source(conn: &Connection, id: i64) -> Option<SourceItem> {
     .optional()
     .ok()
     .flatten()
+}
+
+// ---------- 音源管理（LX 兼容脚本 / 网络接口音源） ----------
+
+fn row_to_lx_source(r: &Row) -> rusqlite::Result<LxSourceItem> {
+    let platforms_json: String = r.get(5)?;
+    Ok(LxSourceItem {
+        id: r.get(0)?,
+        kind: r.get(1)?,
+        name: r.get(2)?,
+        base_url: r.get(3)?,
+        origin: r.get(4)?,
+        platforms: serde_json::from_str(&platforms_json).unwrap_or_default(),
+        enabled: r.get::<_, i64>(6)? != 0,
+        created_at: r.get(7)?,
+    })
+}
+
+pub fn lx_list_sources(conn: &Connection) -> Vec<LxSourceItem> {
+    let mut stmt = match conn.prepare(
+        "SELECT id, kind, name, base_url, origin, platforms, enabled, created_at \
+         FROM lx_sources ORDER BY id DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([], row_to_lx_source)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+/// 仅取启用的源（后续播放链路分流用）
+pub fn lx_enabled_sources(conn: &Connection) -> Vec<LxSourceItem> {
+    lx_list_sources(conn)
+        .into_iter()
+        .filter(|s| s.enabled)
+        .collect()
+}
+
+/// 插入；同 base_url 已存在时返回该行 id（幂等）。
+/// 返回 (id, 是否新建)
+pub fn lx_add_source(
+    conn: &Connection,
+    kind: &str,
+    name: &str,
+    base_url: &str,
+    origin: &str,
+    platforms_json: &str,
+) -> Result<(i64, bool), String> {
+    if let Some(existing) = lx_list_sources(conn).into_iter().find(|s| s.base_url == base_url) {
+        // 已存在：刷新契约与脚本原文（订阅可能更新），保持启用状态不变
+        conn.execute(
+            "UPDATE lx_sources SET name=?1, origin=?2, platforms=?3, kind=?4 WHERE id=?5",
+            params![name, origin, platforms_json, kind, existing.id],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok((existing.id, false));
+    }
+    conn.execute(
+        "INSERT INTO lx_sources(kind, name, base_url, origin, platforms, enabled, created_at) \
+         VALUES(?1, ?2, ?3, ?4, ?5, 1, ?6)",
+        params![kind, name, base_url, origin, platforms_json, now_secs()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((conn.last_insert_rowid(), true))
+}
+
+pub fn lx_set_enabled(conn: &Connection, id: i64, enabled: bool) -> Result<(), String> {
+    conn.execute(
+        "UPDATE lx_sources SET enabled=?1 WHERE id=?2",
+        params![enabled as i64, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn lx_delete_source(conn: &Connection, id: i64) {
+    let _ = conn.execute("DELETE FROM lx_sources WHERE id = ?1", params![id]);
 }
 
 pub fn update_source_title(conn: &Connection, id: i64, title: &str) {
