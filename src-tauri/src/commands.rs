@@ -747,9 +747,40 @@ fn builtin_play_song(state: &State<AppState>, req: &LxPlaySongReq) -> Result<(),
 /// 这是"音源管理"与播放链路的集成点：与网易云/QQ/酷狗在线播放共用
 /// `play_url`，因此进度、歌词、SMTC、最近播放等行为完全一致。
 #[tauri::command]
-pub async fn lx_play_song(state: State<'_, AppState>, req: LxPlaySongReq) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub async fn lx_play_song(
+    state: State<'_, AppState>,
+    source_id: Option<i64>,
+    platform: Option<String>,
+    song_id: Option<String>,
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    cover: Option<String>,
+    duration_ms: Option<u64>,
+    quality: Option<String>,
+    extra: Option<String>,
+) -> Result<(), String> {
+    // 前端以扁平参数调用（与 lx_search / lx_resolve_url 一致），这里收敛成内部结构体。
+    #[allow(unused_mut)]
+    let mut req = LxPlaySongReq {
+        source_id: source_id.unwrap_or(0),
+        platform: platform.unwrap_or_default(),
+        song_id: song_id.unwrap_or_default(),
+        title: title.unwrap_or_default(),
+        artist: artist.unwrap_or_default(),
+        album: album.unwrap_or_default(),
+        cover: cover.unwrap_or_default(),
+        duration_ms: duration_ms.unwrap_or(0),
+        quality: quality.filter(|q| !q.trim().is_empty()),
+        extra: extra.filter(|e| !e.trim().is_empty()),
+    };
     if req.song_id.trim().is_empty() {
         return Err("歌曲 ID 无效，无法取链".into());
+    }
+    // 兜底：未接入音源且未指定平台时走酷狗（匿名可直接取链），避免空参数直接报错
+    if req.platform.trim().is_empty() && req.source_id <= 0 {
+        req.platform = "kg".to_string();
     }
     // 未接入音源（sourceId <= 0）：回退内置平台取链，保证页面开箱可用
     if req.source_id <= 0 {
