@@ -1,4 +1,4 @@
-//! LX 兼容音源（自定义音源脚本 / HTTP 接口音源）
+//! 音源脚本（本地导入 / .js 订阅）与 HTTP 接口音源
 //!
 //! 设计取舍：**不内嵌 JS 运行时**。业界（lx-music-desktop）的音源脚本跑在
 //! 沙箱里、通过 `globalThis.lx` 与宿主交互；其中占绝大多数的是「HTTP 接口
@@ -6,6 +6,12 @@
 //! 不含加密运算。对这类脚本，Yimai 在导入时**静态解析出契约**
 //! （API_BASE、平台/音质声明），播放取链由本模块用 ureq 原生完成，效果与
 //! 执行脚本一致而无需沙箱。
+//!
+//! 导入校验原则：**宽进**。只要是结构合法的音源脚本就允许导入——不强制
+//! 引用 `globalThis.lx`（那是 LX 宿主专属），也不强制 `musicUrl` 动作名，
+//! 只要文件具备任意一项音源脚本特征（取链方法 / 接口路径 / 平台声明 /
+//! 接口地址常量）并能解析出取链接口基址即可。仅对"根本不是脚本""结构不
+//! 像音源脚本""解析不出接口地址"三类情况报错。
 //!
 //! 支持的接口协议（与 lx-online-api 系部署一致）：
 //! - `GET {base}/url.php?source=&id=&quality=&[extra=]` → `{code:0,data:{url}}`
@@ -56,31 +62,38 @@ pub struct ParsedScript {
     pub platforms: Vec<LxPlatform>,
 }
 
-/// 解析 LX 音源脚本文本，提取 API_BASE 与平台/音质契约。
+/// 解析音源脚本文本，提取 API_BASE 与平台/音质契约。
 ///
 /// 校验链（每步失败都返回可操作的中文错误）：
-/// 1. 必须引用 `globalThis.lx`（否则根本不是 LX 音源脚本）；
-/// 2. 必须处理 `musicUrl` 动作（只做歌词/封面的脚本对本播放器无意义）；
-/// 3. 必须能定位取链接口基址（API_BASE 常量或脚本内首个 https 字面量）。
+/// 1. 内容非空，且不是网页 / JSON / XML 这类非脚本文档；
+/// 2. 具备音源脚本的结构特征之一（取链方法、接口路径、平台声明、接口地址常量）；
+///    —— 刻意不强制 `globalThis.lx` 与 `musicUrl`，普通音源脚本同样可导入；
+/// 3. 能定位取链接口基址（API_BASE 常量或脚本内首个 https 字面量）。
 pub fn parse_script(text: &str) -> Result<ParsedScript, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err("脚本是空的".into());
+        return Err("脚本内容为空，请选择音源脚本文件或粘贴脚本内容".into());
     }
-    if !trimmed.contains("globalThis.lx") && !trimmed.contains("globalThis[\"lx\"]") {
+    // 1) 明显的非脚本文档（误选了网页/数据文件）
+    if let Some(kind) = document_kind(trimmed) {
+        return Err(format!(
+            "文件内容是{kind}，不是 JavaScript 音源脚本。请确认选择的是音源脚本文件（如 source.js）"
+        ));
+    }
+    // 2) 结构合法性：命中任意一项音源脚本特征即可（不要求 LX 专属写法）
+    if !has_source_marker(trimmed) {
         return Err(
-            "这不是 LX 音源脚本（未引用 globalThis.lx）。请确认选择的是音源脚本文件（如 source.js）"
+            "文件结构不像音源脚本：未发现取链方法（如 musicUrl）、音源接口路径（如 url.php）、\
+             平台声明（如 wy / tx / kg）或接口地址常量（如 API_BASE）。\
+             请确认选择的是音源脚本文件（如 source.js）"
                 .into(),
         );
-    }
-    if !trimmed.contains("musicUrl") {
-        return Err("脚本未声明 musicUrl 动作，无法用于取链播放".into());
     }
 
     let base = extract_base(trimmed)
         .ok_or_else(|| {
-            "无法从脚本中定位取链接口地址（API_BASE）。该脚本可能内置加密运算或非常规接口协议，\
-             当前版本仅支持 HTTP 接口型音源脚本（如 lx-online-api 部署）"
+            "无法从脚本中解析出取链接口地址（API_BASE）。请确认脚本内包含接口基址\
+             （如 const API_BASE = 'https://…'）；含加密运算或私有协议的脚本暂不支持"
                 .to_string()
         })?;
 
@@ -92,6 +105,85 @@ pub fn parse_script(text: &str) -> Result<ParsedScript, String> {
     let platforms = extract_platforms(trimmed);
 
     Ok(ParsedScript { name, base_url: base, platforms })
+}
+
+/// 非脚本文档识别：误选网页 / JSON / XML 数据文件时给出准确提示。
+/// 只判断"明显不是 JS 脚本"的情形，脚本本身不受影响。
+fn document_kind(text: &str) -> Option<&'static str> {
+    let head_end = text.ceil_char_boundary(512.min(text.len()));
+    let head = text[..head_end].to_lowercase();
+    let head = head.trim_start();
+    if head.starts_with("<!doctype") || head.starts_with("<html") {
+        return Some("HTML 网页");
+    }
+    if head.starts_with("<?xml") {
+        return Some("XML 数据");
+    }
+    // JSON：以 { 或 [ 开头且整体可被解析（脚本不会满足这两点）
+    if (text.starts_with('{') || text.starts_with('['))
+        && serde_json::from_str::<serde_json::Value>(text).is_ok()
+    {
+        return Some("JSON 数据");
+    }
+    None
+}
+
+/// 音源脚本的结构特征判定：命中任意一项即认为是结构合法的音源脚本。
+///
+/// 刻意做成"宽进"：`globalThis.lx` 与 `musicUrl` 都只作为**可选特征**参与判定，
+/// 不再作为强制条件，因此普通音源脚本（自有函数命名、模块导出等写法）也能导入。
+fn has_source_marker(text: &str) -> bool {
+    let lower = text.to_lowercase();
+
+    // 1) 取链方法 / 动作名（LX 的 musicUrl 动作，或常见的函数命名风格）
+    for m in [
+        "musicurl",
+        "getmusicurl",
+        "getplayurl",
+        "getaudiostream",
+        "songurl",
+        "playurl",
+        "geturl",
+    ] {
+        if lower.contains(m) {
+            return true;
+        }
+    }
+    // 2) 音源接口路径（lx-online-api 系部署）
+    for p in ["url.php", "lyric.php", "pic.php", "search.php", "platforms.php"] {
+        if lower.contains(p) {
+            return true;
+        }
+    }
+    // 3) 平台 / 音质声明：`wy: { name: …, qualitys: […] }` 或 `sources = { … }`
+    if platform_re().is_match(text)
+        || (lower.contains("sources")
+            && (lower.contains("qualitys") || lower.contains("qualities")))
+    {
+        return true;
+    }
+    // 4) 接口地址常量（API_BASE / BASE_URL …）
+    if has_base_const(text) {
+        return true;
+    }
+    // 5) LX 宿主对象（lx-music 系脚本）—— 仅作识别，不作为强制条件
+    lower.contains("globalthis.lx")
+        || lower.contains("globalthis[\"lx\"]")
+        || lower.contains("globalthis['lx']")
+}
+
+/// 是否声明了接口基址常量（不含 http 字面量回退，避免任意 URL 都能命中）
+fn has_base_const(text: &str) -> bool {
+    Regex::new(
+        r#"(?i)(?:const|let|var)\s+(?:API_BASE|API_HOST|BASE_URL|BASEURL|APIBASE|API_URL)\s*="#,
+    )
+    .map(|re| re.is_match(text))
+    .unwrap_or(false)
+}
+
+/// 平台声明块正则（`wy: { … }`），解析与结构判定共用同一份，避免两处漂移。
+fn platform_re() -> Regex {
+    Regex::new(r#"(?m)^\s*(wy|tx|kw|kg|mg|joox|xm|bd)\s*:\s*\{([^{}]*)\}"#).expect("platform regex")
 }
 
 /// 提取 API_BASE：优先 `const API_BASE = '…'`（兼容常见变量名与引号风格），
@@ -154,10 +246,7 @@ fn extract_script_name(text: &str) -> Option<String> {
 /// 形如 `wy: { name: '网易云音乐', qualitys: ['128k', '320k', 'flac'] }`
 /// （兼容双引号、无 name、`qualities`/`qualitys` 两种拼写、跨行数组）
 fn extract_platforms(text: &str) -> Vec<LxPlatform> {
-    let re = Regex::new(
-        r#"(?m)^\s*(wy|tx|kw|kg|mg|joox|xm|bd)\s*:\s*\{([^{}]*)\}"#,
-    )
-    .expect("platform regex");
+    let re = platform_re();
     let re_name = Regex::new(r#"(?i)\bname\s*:\s*['"]([^'"]*)['"]"#).expect("name regex");
     // 注意：既支持官方拼写 qualitys 也支持误写 qualities（qualit + y|ie + s）
     let re_quals =
@@ -659,10 +748,80 @@ fn decodes_js_unicode_escapes() {
     assert_eq!(decode_js_escapes("plain"), "plain");
 }
 
+    /// 普通音源脚本（不引用 globalThis.lx）也必须能导入成功
+    const PLAIN: &str = r#"
+// 自建音源：只导出取链方法，不依赖任何宿主对象
+const API_BASE = 'https://music.example.com'
+
+export const sources = {
+  kg: { name: '酷狗音乐', qualitys: ['128k', '320k'] },
+}
+
+export async function getMusicUrl(songInfo) {
+  const r = await fetch(`${API_BASE}/url.php?source=kg&id=${songInfo.id}&quality=320k`)
+  return (await r.json()).data.url
+}
+"#;
+
+    /// 只声明平台与接口常量、函数命名非 musicUrl 的极简脚本，同样应放行
+    const MINIMAL: &str = r#"
+const BASE_URL = 'https://music.example.com'
+const PLATFORMS = [
+  wy: { name: '网易云音乐' },
+]
+"#;
+
     #[test]
-    fn rejects_non_lx_script() {
+    fn lx_script_import_unchanged() {
+        // 含 globalThis.lx 的 LX 脚本：行为与改动前一致
+        let p = parse_script(SAMPLE).expect("LX 脚本应通过");
+        assert_eq!(p.base_url, "https://music.example.com");
+    }
+
+    #[test]
+    fn accepts_plain_source_script() {
+        // 无 globalThis.lx 的普通音源脚本：允许导入（本次改动的重点）
+        let p = parse_script(PLAIN).expect("普通脚本应通过");
+        assert_eq!(p.base_url, "https://music.example.com");
+        assert_eq!(p.platforms.len(), 1);
+        assert_eq!(p.platforms[0].code, "kg");
+        assert_eq!(p.platforms[0].name, "酷狗音乐");
+    }
+
+    #[test]
+    fn accepts_minimal_script() {
+        // 只有接口常量 + 平台声明，函数命名不含 musicUrl：仍应放行
+        let p = parse_script(MINIMAL).expect("极简脚本应通过");
+        assert_eq!(p.base_url, "https://music.example.com");
+        assert_eq!(p.platforms.len(), 1);
+    }
+
+    #[test]
+    fn rejects_non_source_script() {
+        // 普通 JS 文件：无音源脚本特征 → 结构不合法
         let err = parse_script("console.log('hi')").unwrap_err();
-        assert!(err.contains("不是 LX 音源脚本"), "{err}");
+        assert!(err.contains("不像音源脚本"), "{err}");
+        assert!(!err.contains("LX"), "{err}");
+    }
+
+    #[test]
+    fn rejects_html_document() {
+        // 误选网页：给出"不是脚本"而非"不是 LX 脚本"
+        let err = parse_script("<!doctype html><html><body>hi</body></html>").unwrap_err();
+        assert!(err.contains("HTML 网页"), "{err}");
+    }
+
+    #[test]
+    fn rejects_json_document() {
+        let err = parse_script(r#"{"code":0,"data":{"url":"x"}}"#).unwrap_err();
+        assert!(err.contains("JSON 数据"), "{err}");
+    }
+
+    #[test]
+    fn rejects_no_base_url() {
+        // 有音源特征但解析不出接口地址 → 保留"无法解析"的报错
+        let err = parse_script("function musicUrl() { return buildLocalPath() }").unwrap_err();
+        assert!(err.contains("无法从脚本中解析出取链接口地址"), "{err}");
     }
 
     #[test]

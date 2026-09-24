@@ -696,7 +696,7 @@ export default function SettingsView() {
   );
 }
 
-/** 音源管理：LX 兼容脚本（本地导入/粘贴）与网络接口音源的导入、启停、测试、删除。
+/** 音源管理：音源脚本（本地导入/粘贴，兼容 LX 脚本）与网络接口音源的导入、启停、测试、删除。
     取链等网络操作全部走 Rust 后端命令（规避 WebView 跨域限制）。 */
 function SourceManagerSection() {
   const [sources, setSources] = useState<LxSourceItem[]>([]);
@@ -755,7 +755,7 @@ function SourceManagerSection() {
       setMode(null);
       reload();
     } catch (e) {
-      // 后端已给出具体原因（非 LX 脚本 / 缺 musicUrl / 无法定位接口）
+      // 后端已给出具体原因（非脚本文档 / 结构不像音源脚本 / 无法解析接口地址）
       toast(String(e), "error");
     } finally {
       setBusyScript(false);
@@ -882,8 +882,9 @@ function SourceManagerSection() {
             </button>
           </div>
           <p className="text-[11.5px] text-[var(--ink-3)] mt-2">
-            导入时会校验脚本格式：必须引用 globalThis.lx、声明 musicUrl 动作，并解析出取链接口地址；
-            含加密运算、非 HTTP 接口型的脚本暂不支持，会给出明确报错。
+            导入时只校验脚本结构与取链接口地址：脚本需具备取链方法（如 musicUrl）、
+            音源接口路径（如 url.php）、平台声明或接口地址常量之一，并能解析出取链接口地址，
+            不要求特定的宿主写法；网页 / JSON 等非脚本文档、结构不符或解析不出接口地址时会给出明确报错。
           </p>
         </div>
       )}
@@ -989,7 +990,7 @@ function SourceManagerSection() {
       ) : (
         <div className="text-[12.5px] text-[var(--ink-2)] py-2">
           {loaded
-            ? "还没有音源。可导入 LX 音源脚本，或添加网络音源地址。"
+            ? "还没有音源。可导入音源脚本（如 source.js），或添加网络音源地址。"
             : "加载中…"}
         </div>
       )}
