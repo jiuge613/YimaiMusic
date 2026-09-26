@@ -18,10 +18,79 @@ use tauri::{AppHandle, Emitter};
 /// 若日后改名/迁移仓库，同步修改此处即可。
 const GITHUB_REPO: &str = "jiuge613/YimaiMusic";
 const UA: &str = "Yimai-Updater";
-/// 下载整体超时兜底：安装包一般 10~20 MB，弱网也足够；卡死连接最终会在此报错
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+/// 单个下载来源的连接/传输超时：安装包 10~20 MB，弱网 180s 足够；
+/// 某来源卡死/无响应时在该超时后快速切换下一个候选源，避免整体挂起。
+const SOURCE_TIMEOUT: Duration = Duration::from_secs(180);
 
 static DOWNLOAD_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// GitHub 下载代理镜像（ghproxy 风格：`{mirror}/{github 原链接}`）。
+/// 仅用于「下载 GitHub 附件」的兜底切换：直连失败/超时/连接被重置时按序尝试，
+/// 国内网络下显著提升更新包下载成功率。顺序=按实测可用性排前的源在前；
+/// 失效的源会被快速跳过（连接失败即切换），不影响最终结果。
+/// 新增/移除镜像只维护这个列表即可，UI 无需任何改动。
+const GITHUB_MIRRORS: &[&str] = &[
+    "https://ghproxy.cc/",
+    "https://gh.monoliker.com/",
+    "https://gproxy.twinzips.top/",
+    "https://ghproxy.mnjiang.cn/",
+    "https://ghproxy.mciel.com/",
+    "https://github.chenc.dev/",
+    "https://ghfile.geekertao.top/",
+    "https://gh.llk-exmfr52bqpe.top/",
+    "https://gh.kleyeas.com/",
+    "https://ghm.0t8465.xyz/",
+    "https://gh-proxy.com/",
+    "https://github-proxy-memory-echoes.cn/",
+    "https://fastgit.cc/",
+    "https://gh.nokiu.com/",
+    "https://gh.gxpk.top/",
+    "https://gh.xcxxxo.cf/",
+    "https://tv.tw/",
+    "https://gh.kichills.cn/",
+    "https://cdn.akacoder.online/",
+];
+
+/// GitHub 附件直链（api.github.com 返回的 browser_download_url）形如：
+/// https://github.com/{owner}/{repo}/releases/download/{tag}/{file}
+/// 镜像代理要求拼接原始 github.com 完整链接。这里解析出
+/// `{owner}/{repo}/releases/download/...` 这段可被镜像代理前缀的路径；
+/// 非该形式的 URL 返回 None（保持原样直连，不套用镜像）。
+fn github_download_path(url: &str) -> Option<String> {
+    let u = url.trim();
+    let rest = u.strip_prefix("https://github.com/")?;
+    let path = rest.split_once('?').map(|(p, _)| p).unwrap_or(rest);
+    let mut parts = path.split('/');
+    let (owner, repo) = (parts.next()?, parts.next()?);
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    let prefix = format!("{owner}/{repo}/releases/download/");
+    if !path.starts_with(&prefix) {
+        return None;
+    }
+    // 归一为 {owner}/{repo}/releases/download/{tag}/{file}（相对 github.com）
+    Some(path.to_string())
+}
+
+/// 生成候选下载源：直连（github.com 完整链接）+ 各镜像代理。
+///
+/// ghproxy 类镜像的协议是 `{mirror}/https://github.com/...`——前缀后接
+/// **完整**原始链接（含 https 与 github.com），所以这里先构造完整直连 URL，
+/// 再对每个镜像做前缀拼接。非 GitHub 附件链接保持原 URL 直连，不套用镜像。
+fn mirror_candidates(url: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(p) = github_download_path(url) {
+        let direct = format!("https://github.com/{p}");
+        out.push(direct.clone());
+        for m in GITHUB_MIRRORS {
+            out.push(format!("{}/{}", m.trim_end_matches('/'), direct));
+        }
+    } else {
+        out.push(url.to_string());
+    }
+    out
+}
 
 pub fn cancel_download() {
     DOWNLOAD_CANCEL.store(true, Ordering::Relaxed);
@@ -122,23 +191,17 @@ pub fn fetch_latest(current_version: &str) -> Result<Option<UpdateInfo>, String>
     }))
 }
 
-/// 下载安装包到临时目录，期间通过 `update://progress` 事件上报进度。
-/// 返回下载文件的完整路径。文件大小与 release 附件声明的 size 校验一致。
-pub fn download(app: &AppHandle, url: &str, name: &str, expected_size: u64) -> Result<PathBuf, String> {
-    DOWNLOAD_CANCEL.store(false, Ordering::Relaxed);
-    // 附件名固定为 Yimai_*-setup.exe，仅允许常规文件名字符，避免拼进脚本出问题
-    let safe_name: String = name
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '(' | ')'))
-        .collect();
-    if safe_name.is_empty() {
-        return Err("安装包文件名无效".into());
-    }
-    let path = std::env::temp_dir().join(&safe_name);
-
+/// 从一个 URL 下载全部字节到临时文件，带进度事件。
+/// 成功后返回路径；失败（含下载中断）删除半成品文件并返回错误。
+fn download_from_one(
+    app: &AppHandle,
+    url: &str,
+    path: &Path,
+    expected_size: u64,
+) -> Result<PathBuf, String> {
     let resp = ureq::get(url)
         .set("User-Agent", UA)
-        .timeout(DOWNLOAD_TIMEOUT)
+        .timeout(SOURCE_TIMEOUT)
         .call()
         .map_err(|e| match e {
             ureq::Error::Status(code, _) => format!("下载失败（HTTP {code}）"),
@@ -146,11 +209,11 @@ pub fn download(app: &AppHandle, url: &str, name: &str, expected_size: u64) -> R
         })?;
     let total = resp
         .header("Content-Length")
-        .and_then(|v| v.parse::<u64>().ok())
+        .and_then(|v: &str| v.parse::<u64>().ok())
         .unwrap_or(expected_size);
 
     let mut reader = resp.into_reader();
-    let mut file = std::fs::File::create(&path).map_err(|e| format!("无法写入临时目录：{e}"))?;
+    let mut file = std::fs::File::create(path).map_err(|e| format!("无法写入临时目录：{e}"))?;
 
     let mut buf = [0u8; 64 * 1024];
     let mut received: u64 = 0;
@@ -158,7 +221,7 @@ pub fn download(app: &AppHandle, url: &str, name: &str, expected_size: u64) -> R
     loop {
         if DOWNLOAD_CANCEL.load(Ordering::Relaxed) {
             drop(file);
-            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(path);
             return Err("已取消下载".into());
         }
         match reader.read(&mut buf) {
@@ -177,7 +240,7 @@ pub fn download(app: &AppHandle, url: &str, name: &str, expected_size: u64) -> R
             }
             Err(e) => {
                 drop(file);
-                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(path);
                 return Err(format!("下载中断：{e}"));
             }
         }
@@ -186,10 +249,47 @@ pub fn download(app: &AppHandle, url: &str, name: &str, expected_size: u64) -> R
     drop(file);
 
     if total > 0 && received != total {
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path);
         return Err("下载不完整，请重试".into());
     }
-    Ok(path)
+    Ok(path.to_path_buf())
+}
+
+/// 下载安装包到临时目录，期间通过 `update://progress` 事件上报进度。
+/// 返回下载文件的完整路径。文件大小与 release 附件声明的 size 校验一致。
+///
+/// 可靠性增强：按「直连 → 各 GitHub 代理镜像」的候选顺序依次尝试。
+/// 单个来源连接失败 / HTTP 错误 / 下载中断都只切换下一个来源（并上报
+/// 一条日志到 stderr，不打断前端进度语义——进度按已接收字节数单调递增，
+/// 切换来源时从头重新计数）。若全部来源均失败，返回最后一次的错误。
+pub fn download(app: &AppHandle, url: &str, name: &str, expected_size: u64) -> Result<PathBuf, String> {
+    DOWNLOAD_CANCEL.store(false, Ordering::Relaxed);
+    // 附件名固定为 Yimai_*-setup.exe，仅允许常规文件名字符，避免拼进脚本出问题
+    let safe_name: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '(' | ')'))
+        .collect();
+    if safe_name.is_empty() {
+        return Err("安装包文件名无效".into());
+    }
+    let path = std::env::temp_dir().join(&safe_name);
+
+    let candidates = mirror_candidates(url);
+    let mut last_err: Option<String> = None;
+    for (i, cand) in candidates.iter().enumerate() {
+        if i > 0 {
+            eprintln!("[updater] 切换下载源 ({}/{})：{cand}", i + 1, candidates.len());
+        }
+        match download_from_one(app, cand, &path, expected_size) {
+            Ok(p) => return Ok(p),
+            Err(e) if e == "已取消下载" => return Err(e),
+            Err(e) => {
+                eprintln!("[updater] 下载源失败：{e}");
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "下载失败：无可用下载源".to_string()))
 }
 
 fn ps_quote(s: &str) -> String {
@@ -312,8 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn script_quotes_paths_with_spaces_and_chinese() {
-        let s = build_update_script(
+    fn script_quotes_paths_with_spaces_and_chinese() {        let s = build_update_script(
             r"C:\Users\张三\AppData\Local\Temp\Yimai_0.1.2.0_x64-setup.exe",
             r"C:\Program Files\Yimai",
             r"C:\Program Files\Yimai\yimai.exe",
@@ -328,5 +427,48 @@ mod tests {
         // 单引号转义：路径里的 ' 必须 doubled，避免破坏 PS 字符串
         let q = build_update_script("C:\\it's\\setup.exe", "C:\\app", "C:\\app\\yimai.exe");
         assert!(q.contains("'C:\\it''s\\setup.exe'"));
+    }
+
+    #[test]
+    fn github_download_path_parses_release_url() {
+        // 标准 browser_download_url
+        assert_eq!(
+            github_download_path("https://github.com/jiuge613/YimaiMusic/releases/download/v0.1.11/Yimai_0.1.11.0_x64-setup.exe"),
+            Some("jiuge613/YimaiMusic/releases/download/v0.1.11/Yimai_0.1.11.0_x64-setup.exe".to_string())
+        );
+        // 带 query 也能剥掉
+        assert_eq!(
+            github_download_path("https://github.com/a/b/releases/download/v1/f.exe?x=1"),
+            Some("a/b/releases/download/v1/f.exe".to_string())
+        );
+        // 非 releases/download 路径 → 不套镜像
+        assert_eq!(github_download_path("https://github.com/a/b/tree/main"), None);
+        // 非 github 链接 → 不套镜像
+        assert_eq!(github_download_path("https://cdn.example.com/app.exe"), None);
+    }
+
+    #[test]
+    fn mirror_candidates_direct_first_then_mirrors() {
+        let url = "https://github.com/jiuge613/YimaiMusic/releases/download/v0.1.11/setup.exe";
+        let c = mirror_candidates(url);
+        // 直连在最前
+        assert_eq!(
+            c.first().unwrap(),
+            "https://github.com/jiuge613/YimaiMusic/releases/download/v0.1.11/setup.exe"
+        );
+        // 紧跟各镜像，且每个都拼「完整 https://github.com/...」
+        assert_eq!(
+            c.get(1).unwrap(),
+            "https://ghproxy.cc/https://github.com/jiuge613/YimaiMusic/releases/download/v0.1.11/setup.exe"
+        );
+        assert_eq!(c.len(), 1 + GITHUB_MIRRORS.len());
+        // 末个镜像也正确拼接
+        assert!(c.last().unwrap().starts_with("https://cdn.akacoder.online/https://github.com/"));
+    }
+
+    #[test]
+    fn mirror_candidates_non_github_keeps_single() {
+        let c = mirror_candidates("https://some-cdn.example.com/pkg/app.exe");
+        assert_eq!(c, vec!["https://some-cdn.example.com/pkg/app.exe".to_string()]);
     }
 }
