@@ -39,6 +39,14 @@ pub struct TrackInfo {
     /// 播放音质描述（如 "320kbps" / "FLAC"），来自取链接响应
     #[serde(default)]
     pub quality: Option<String>,
+    /// LX 音源身份（仅当曲目来自 LX 导入音源时携带，用于回查歌词）：
+    /// 音源 id / 平台代码（wy/tx/kg…）/ 歌曲 id。内置平台回退播放时不带。
+    #[serde(default)]
+    pub lx_source_id: Option<i64>,
+    #[serde(default)]
+    pub lx_platform: Option<String>,
+    #[serde(default)]
+    pub lx_song_id: Option<String>,
 }
 
 #[derive(Clone, Serialize)]

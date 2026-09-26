@@ -738,6 +738,9 @@ fn builtin_play_song(state: &State<AppState>, req: &LxPlaySongReq) -> Result<(),
         qid: None,
         kgid: None,
         quality: Some(label),
+        lx_source_id: None,
+        lx_platform: None,
+        lx_song_id: None,
     };
     engine_clone(state).play_url(url, info)
 }
@@ -883,8 +886,40 @@ pub async fn lx_play_song(
         qid: None,
         kgid: None,
         quality: Some(quality.to_uppercase()),
+        // 仅当来自真实 LX 音源（source_id > 0）才携带身份，便于回查歌词；
+        // 内置平台回退播放（source_id <= 0）不带，避免无效回查。
+        lx_source_id: if req.source_id > 0 { Some(req.source_id) } else { None },
+        lx_platform: if req.source_id > 0 { Some(platform.clone()) } else { None },
+        lx_song_id: if req.source_id > 0 { Some(req.song_id.clone()) } else { None },
     };
     engine_clone(&state).play_url(url, info)
+}
+
+/// LX 音源歌词：`GET {base}/lyric.php?source=&id=` → 解析 LRC。
+///
+/// 与 `lx_play_song` 共用音源库里的 base_url；前端凭播放时携带的 LX 身份
+/// （source_id / platform / song_id）调用，使 LX 导入音源的曲目也能显示歌词。
+#[tauri::command]
+pub async fn lx_lyric(
+    state: State<'_, AppState>,
+    source_id: i64,
+    platform: String,
+    song_id: String,
+) -> Result<LyricsPayload, String> {
+    let base = {
+        let conn = state.db.lock();
+        let item = db::lx_list_sources(&conn)
+            .into_iter()
+            .find(|s| s.id == source_id)
+            .ok_or("音源不存在，请在设置 → 音源管理中重新添加")?;
+        if !item.enabled {
+            return Err("该音源已停用，请先在设置中启用".into());
+        }
+        item.base_url
+    };
+    let text = lxsource::lyric(&base, &platform, &song_id)?;
+    let p = lyrics::parse(&text);
+    Ok(LyricsPayload { synced: p.synced, lines: p.lines })
 }
 
 // ---------- 播放控制 ----------
@@ -923,6 +958,9 @@ pub async fn play_track(state: State<'_, AppState>, id: i64) -> Result<(), Strin
         qid: None,
         kgid: None,
         quality: (!local_quality.is_empty()).then_some(local_quality),
+        lx_source_id: None,
+        lx_platform: None,
+        lx_song_id: None,
     };
     engine_clone(&state).play_file(info)
 }
@@ -950,6 +988,9 @@ pub async fn play_source(state: State<'_, AppState>, id: i64) -> Result<(), Stri
         qid: None,
         kgid: None,
         quality: None,
+        lx_source_id: None,
+        lx_platform: None,
+        lx_song_id: None,
     };
     engine_clone(&state).play_url(item.url, info)
 }
@@ -1042,6 +1083,9 @@ pub async fn netease_play(
         qid: None,
         kgid: None,
         quality: Some(quality_label),
+        lx_source_id: None,
+        lx_platform: None,
+        lx_song_id: None,
     };
     let _ = app; // 事件由引擎发出
     engine_clone(&state).play_url(url, info)
@@ -1229,6 +1273,9 @@ pub async fn qq_play(
         qid: Some(track.songmid.clone()),
         kgid: None,
         quality: Some(quality_label),
+        lx_source_id: None,
+        lx_platform: None,
+        lx_song_id: None,
     };
     // 记录到“最近播放”（在线曲目元数据轻量入库）
     {
@@ -1320,6 +1367,9 @@ pub async fn kugou_play(state: State<'_, AppState>, track: KgPlayReq) -> Result<
         qid: None,
         kgid: Some(track.hash.clone()),
         quality: Some(quality_label),
+        lx_source_id: None,
+        lx_platform: None,
+        lx_song_id: None,
     };
     // 记录到“最近播放”（在线曲目元数据轻量入库）
     {

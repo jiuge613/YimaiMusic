@@ -160,6 +160,10 @@ export interface TrackInfo {
   qid?: string | null;
   kgid?: string | null;
   quality?: string | null;
+  /** LX 音源身份（仅来自 LX 导入音源时携带，用于回查歌词）：音源 id / 平台 / 歌曲 id */
+  lxSourceId?: number | null;
+  lxPlatform?: string | null;
+  lxSongId?: string | null;
 }
 
 export interface QqSong {

@@ -5668,7 +5668,7 @@ dependencies = [
 
 [[package]]
 name = "yimai"
-version = "0.1.8"
+version = "0.1.10"
 dependencies = [
  "aes",
  "base64 0.22.1",

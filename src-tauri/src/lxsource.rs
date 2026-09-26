@@ -170,6 +170,18 @@ fn has_source_marker(text: &str) -> bool {
     lower.contains("globalthis.lx")
         || lower.contains("globalthis[\"lx\"]")
         || lower.contains("globalthis['lx']")
+        || has_lx_server_signature(&lower)
+}
+
+/// LX 服务端下发（打包 / 混淆）音源脚本签名识别。
+///
+/// 洛雪 / 落雪系服务器推送脚本（如 `lx-music-source-v6+`）的主体经过 JS
+/// Packer 混淆：取链方法（`musicUrl`）、接口路径（`url.php`）、平台声明（`wy:`）
+/// 都只在运行时解包后才存在，静态文本里一个都看不到；它也不引用 `globalThis.lx`。
+/// 但它必定带 `globalThis['SERVER_SCRIPT_CONFIG']`，里面含 `apiUrl`（即取链接口
+/// 基址）。用「下发配置签名」识别这类脚本，避免被误判成「非音源脚本」。
+fn has_lx_server_signature(lower: &str) -> bool {
+    lower.contains("server_script_config") && lower.contains("apiurl")
 }
 
 /// 是否声明了接口基址常量（不含 http 字面量回退，避免任意 URL 都能命中）
@@ -199,6 +211,17 @@ fn extract_base(text: &str) -> Option<String> {
             return candidate;
         }
     }
+    // apiUrl：LX 服务端下发脚本把取链基址放在 SERVER_SCRIPT_CONFIG 的 JSON 里
+    //（`"apiUrl":"https:\/\/host"`，斜杠被转义），也可能写成 `apiUrl = 'https://…'`。
+    // 这类脚本没有 API_BASE 常量，必须单独抽取。JSON 写法里 apiUrl 是带引号键名，
+    // 键名与冒号之间还有个闭合引号，故用 ["']? 兼容。
+    let re_api = Regex::new(r#"(?i)apiurl["']?\s*[:=]\s*['"]([^'"]+)['"]"#).ok()?;
+    if let Some(cap) = re_api.captures(text) {
+        let candidate = normalize_base(&cap[1]);
+        if candidate.is_some() {
+            return candidate;
+        }
+    }
     // 回退：脚本里第一个 http(s) 字面量（排除明显是文档/说明的链接）
     let re_url = Regex::new(r#"['"](https?://[^'"\s]+)['"]"#).ok()?;
     for cap in re_url.captures_iter(text) {
@@ -212,7 +235,8 @@ fn extract_base(text: &str) -> Option<String> {
 
 /// 归一化基址：去尾斜杠、去查询串；必须 http(s) 且含主机名。
 fn normalize_base(raw: &str) -> Option<String> {
-    let mut s = raw.trim().to_string();
+    // JSON 字符串里 URL 常被写成 "https:\/\/host"（斜杠被转义），先还原
+    let mut s = raw.trim().replace("\\/", "/").to_string();
     if s.starts_with("http://") || s.starts_with("https://") {
         if let Some(pos) = s.find('?') {
             s.truncate(pos);
@@ -556,6 +580,36 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
+/// 取歌词：`GET {base}/lyric.php?source=&id=` → `{code:0,data:{lyric[,tlyric]}}`。
+///
+/// 与 `music_url` 同协议（lx-online-api 系）；优先取 `lyric`，为空时回退 `tlyric`
+/// （翻译）。返回原始 LRC 文本，由 `lyrics` 模块解析成逐字 / 行级结构。
+pub fn lyric(base: &str, source: &str, id: &str) -> Result<String, String> {
+    if id.is_empty() || id == "0" {
+        return Err("歌曲 ID 无效，无法获取歌词".into());
+    }
+    let url = format!("{base}/lyric.php?source={source}&id={id}");
+    let data = unwrap_lx_envelope(get_json(&url)?, "歌词")?;
+    let lyric = data
+        .get("lyric")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if !lyric.is_empty() {
+        return Ok(lyric);
+    }
+    // 部分部署把翻译放在 tlyric（同样为 LRC），原文缺失时回退使用
+    let tl = data
+        .get("tlyric")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if !tl.is_empty() {
+        return Ok(tl);
+    }
+    Err("该音源未返回歌词".into())
+}
+
 // ---------- 搜索（排行榜） ----------
 
 /// 音源搜索：`GET {base}/search.php?source=&keyword=&limit=&page=`
@@ -827,6 +881,39 @@ const PLATFORMS = [
     #[test]
     fn rejects_empty() {
         assert!(parse_script("   ").is_err());
+    }
+
+    /// 洛雪 / 落雪系「服务端下发」脚本：主体经 JS Packer 混淆，静态文本里
+    /// 看不到 musicUrl / url.php / wy: 等标记，也不引用 globalThis.lx，只带
+    /// `SERVER_SCRIPT_CONFIG`（内含 apiUrl）。此前会被误判成「非音源脚本」。
+    const SERVER_SCRIPT: &str = r#"
+// 服务端下发配置（自动生成，请勿修改）
+globalThis['SERVER_SCRIPT_CONFIG'] = {"apiUrl":"https:\/\/88.lxmusic.xn--fiqs8s","apiKey":"lxmusic","signSalt":"LxSrv@2026#Sig","fingerprint":"ffdaccdf66796c1cbe96df07bf682118"};
+// ===== 服务端下发配置结束 =====
+;(function(p,a,c,k,e,d){e=function(c){return c};/* packed body … */})();
+"#;
+
+    #[test]
+    fn accepts_lx_server_script() {
+        // 混淆的服务端脚本：应接受，并从容器的 apiUrl 抽出取链基址
+        let p = parse_script(SERVER_SCRIPT).expect("服务端下发脚本应通过");
+        assert_eq!(p.base_url, "https://88.lxmusic.xn--fiqs8s");
+    }
+
+    #[test]
+    fn server_script_signature_does_not_false_accept_random() {
+        // 随机普通 JS 文件：既无 SERVER_SCRIPT_CONFIG 也无其它音源特征 → 仍应拒绝
+        let random = parse_script("function fetchData() { return 1 }").unwrap_err();
+        assert!(random.contains("不像音源脚本"), "{random}");
+    }
+
+    #[test]
+    fn normalize_base_unescapes_slashes() {
+        // JSON 里的 "https:\/\/host" 斜杠被转义，必须还原成 "https://host"
+        assert_eq!(
+            normalize_base("https:\\/\\/88.lxmusic.xn--fiqs8s"),
+            Some("https://88.lxmusic.xn--fiqs8s".into())
+        );
     }
 
     #[test]

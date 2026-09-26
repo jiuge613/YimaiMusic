@@ -60,7 +60,11 @@ export default function NowPlaying() {
           ? `qq-${current.qid}`
           : current?.kind === "kugou" && current.kgid != null
             ? `kug-${current.kgid}`
-            : null;
+            : current?.kind === "url" &&
+              current.lxSourceId != null &&
+              current.lxSongId != null
+              ? `lx-${current.lxSourceId}-${current.lxPlatform ?? ""}-${current.lxSongId}`
+              : null;
 
   useEffect(() => {
     if (lyricsKey) {

@@ -95,6 +95,9 @@ export const api = {
     quality?: string;
     extra?: string;
   }) => invoke<void>("lx_play_song", req),
+  /** LX 音源歌词：凭播放时携带的音源身份回查 lyric.php */
+  lxLyric: (sourceId: number, platform: string, songId: string) =>
+    invoke<LyricsPayload>("lx_lyric", { sourceId, platform, songId }),
   neteaseSearch: (keyword: string, offset: number) =>
     invoke<{ total: number; songs: NeteaseTrack[] }>("netease_search", {
       keyword,

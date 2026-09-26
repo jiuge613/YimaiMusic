@@ -330,6 +330,9 @@ function applyPlayState(p: PlayState, posOverride?: number) {
     cur.nid === (p.nid ?? null) &&
     cur.qid === (p.qid ?? null) &&
     cur.quality === (p.quality ?? null) &&
+    cur.lxSourceId === (p.lxSourceId ?? null) &&
+    cur.lxPlatform === (p.lxPlatform ?? null) &&
+    cur.lxSongId === (p.lxSongId ?? null) &&
     cur.liked === liked;
   set({
     ...(sameTrack
@@ -347,6 +350,9 @@ function applyPlayState(p: PlayState, posOverride?: number) {
             nid: p.nid ?? null,
             qid: p.qid ?? null,
             quality: p.quality ?? null,
+            lxSourceId: p.lxSourceId ?? null,
+            lxPlatform: p.lxPlatform ?? null,
+            lxSongId: p.lxSongId ?? null,
             liked,
           },
         }),
@@ -362,8 +368,12 @@ function applyPlayState(p: PlayState, posOverride?: number) {
         ? `net-${p.nid}`
         : p.kind === "qq" && p.qid != null
           ? `qq-${p.qid}`
-          : p.kind === "kugou" && p.kgid != null
-            ? `kug-${p.kgid}`
+        : p.kind === "kugou" && p.kgid != null
+          ? `kug-${p.kgid}`
+          : p.kind === "url" &&
+              p.lxSourceId != null &&
+              p.lxSongId != null
+            ? `lx-${p.lxSourceId}-${p.lxPlatform ?? ""}-${p.lxSongId}`
             : null;
   if (key) get().loadLyricsByKey(key);
   // 换曲开播：在线曲目更新“最近播放”；本地曲目只在本地更新单条的
@@ -1887,15 +1897,24 @@ export const useStore = create<Store>((set, get) => ({
     // 不同 key 之间的来回切换由 lyricsFor 标识丢弃过期响应
     if (get().lyricsFor === key) return;
     set({ lyricsLoading: true, lyricsFor: key, lyrics: null });
-    const [kind, ...rest] = key.split("-");
-    const id = rest.join("-");
+    const parts = key.split("-");
+    const kind = parts[0];
+    const id = parts.slice(1).join("-");
     try {
       const payload =
         kind === "net"
           ? await api.neteaseLyric(Number(id))
           : kind === "qq"
             ? await api.qqLyric(id)
-            : await api.getLyrics(Number(id));
+            : kind === "kug"
+              ? await api.kugouLyric(id)
+              : kind === "lx"
+                ? await api.lxLyric(
+                    Number(parts[1] ?? 0),
+                    parts[2] ?? "",
+                    parts.slice(3).join("-")
+                  )
+                : await api.getLyrics(Number(id));
       if (get().lyricsFor === key) {
         set({ lyrics: payload, lyricsLoading: false });
         pushDesktopLyrics(get());
