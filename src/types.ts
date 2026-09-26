@@ -33,7 +33,7 @@ export interface Folder {
 
 export interface PlaylistEntryMeta {
   rowid: number;
-  kind: "local" | "netease" | "qq" | "kugou";
+  kind: "local" | "netease" | "qq" | "kugou" | "lx";
   trackId: number | null;
   onlineId: string | null;
   title: string;
@@ -217,11 +217,33 @@ export interface CurrentTrack extends TrackInfo {
 
 export type RepeatMode = "off" | "all" | "one";
 
-export type QueueItemKind = "track" | "url" | "netease" | "qq" | "kugou";
+export type QueueItemKind =
+  | "track"
+  | "url"
+  | "netease"
+  | "qq"
+  | "kugou"
+  | "lx";
 
 export type QueueItem =
   | { kind: "track" | "netease" | "url"; id: number }
-  | { kind: "qq" | "kugou"; id: string };
+  | { kind: "qq" | "kugou"; id: string }
+  | { kind: "lx"; id: string };
+
+/** LX（排行榜音源）在线曲目的播放缓存条目。
+ *  id 形如 "sourceId:platform:songId"（与 online_tracks.rid 一致，可直接作缓存键） */
+export interface LxQueueEntry {
+  id: string;
+  sourceId: number;
+  platform: string;
+  songId: string;
+  name: string;
+  artist: string;
+  album: string;
+  cover: string;
+  extra?: string;
+  durationMs: number;
+}
 
 export type ViewName =
   | "library"

@@ -1,4 +1,4 @@
-import { Ban, Heart, ListMusic, MoreHorizontal, Play } from "lucide-react";
+import { Ban, Heart, ListMusic, MoreHorizontal, Play, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useStore } from "../store";
@@ -75,6 +75,7 @@ export default function TrackList({
   const toggleLikeOnline = useStore((s) => s.toggleLikeOnline);
   const downloadOnline = useStore((s) => s.downloadOnline);
   const toggleLike = useStore((s) => s.toggleLike);
+  const removeTrack = useStore((s) => s.removeTrack);
   const addToQueue = useStore((s) => s.addToQueue);
   const playNext = useStore((s) => s.playNext);
   const playlists = useStore((s) => s.playlists);
@@ -312,6 +313,19 @@ export default function TrackList({
         <div className="flex items-center justify-end gap-1 pr-1">
           <button
             className="btn-ghost w-8 h-8"
+            onClick={(e) => {
+              e.stopPropagation();
+              removeTrack(t.id);
+            }}
+            title="移出资料库（不删除磁盘文件）"
+          >
+            <Trash2
+              size={15}
+              className="opacity-0 group-hover:opacity-100 hover:text-[#e0533f]"
+            />
+          </button>
+          <button
+            className="btn-ghost w-8 h-8"
             onClick={() => toggleLike(t.id)}
             title={t.liked ? "取消喜欢" : "喜欢"}
           >
@@ -340,13 +354,25 @@ export default function TrackList({
   };
 
   const renderOnline = (e: PlaylistEntryMeta, i: number, idxNum: number) => {
+    // LX 曲目播放时后端回报 kind="url" + lxSourceId/lxPlatform/lxSongId，
+    // 拼回 "sourceId:platform:songId" 与 entry.onlineId 比对判定高亮
     const active =
-      current?.kind === e.kind &&
-      (e.kind === "qq"
-        ? current.qid === e.onlineId
-        : current.nid === Number(e.onlineId));
+      e.kind === "lx"
+        ? current?.kind === "url" &&
+          !!current.lxSongId &&
+          `${current.lxSourceId}:${current.lxPlatform}:${current.lxSongId}` ===
+            e.onlineId
+        : current?.kind === e.kind &&
+          (e.kind === "qq"
+            ? current.qid === e.onlineId
+            : current.nid === Number(e.onlineId));
     // 播放失败（无版权/下架）：整行置灰 + 无版权标记
-    const failKey = e.kind === "qq" ? `qq:${e.onlineId}` : `netease:${e.onlineId}`;
+    const failKey =
+      e.kind === "qq"
+        ? `qq:${e.onlineId}`
+        : e.kind === "lx"
+          ? `lx:${e.onlineId}`
+          : `netease:${e.onlineId}`;
     const dead = unavailable[failKey] != null;
     const animCls = dragMode || idxNum < ANIM_ROWS ? "anim-row" : "";
     return (
@@ -401,7 +427,13 @@ export default function TrackList({
                 {e.title}
               </span>
               <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-[var(--shade-strong)] text-[var(--ink-3)] font-medium shrink-0">
-                {e.kind === "netease" ? "网易云" : e.kind === "kugou" ? "酷狗" : "QQ音乐"}
+                {e.kind === "netease"
+                  ? "网易云"
+                  : e.kind === "kugou"
+                    ? "酷狗"
+                    : e.kind === "lx"
+                      ? "音源"
+                      : "QQ音乐"}
               </span>
               {e.vip && !dead && (
                 <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-[var(--accent-weak)] text-[var(--accent-strong)] font-bold shrink-0">
@@ -449,7 +481,11 @@ export default function TrackList({
             onClick={() =>
               toggleLikeOnline({
                 kind: e.kind,
-                id: e.kind === "qq" ? (e.onlineId ?? "") : Number(e.onlineId),
+                // qq / lx 用字符串 rid；netease / kugou 用数字 id
+                id:
+                  e.kind === "qq" || e.kind === "lx"
+                    ? (e.onlineId ?? "")
+                    : Number(e.onlineId),
                 name: e.title,
                 artist: e.artist,
                 album: e.album,
@@ -634,6 +670,17 @@ export default function TrackList({
             }}
           >
             <ListMusic size={13} /> 添加到播放列表…
+          </button>
+          <div className="my-1 mx-2 border-t border-[var(--line)]" />
+          <button
+            className="w-full h-8 px-2.5 rounded-lg flex items-center gap-2.5 text-[12.5px] text-[var(--ink)] hover:bg-[var(--shade-strong)] text-left"
+            onClick={() => {
+              removeTrack(menu.track.id);
+              setMenu(null);
+            }}
+            title="从资料库移除这条记录（不删除磁盘文件）"
+          >
+            <Trash2 size={13} className="text-[var(--ink-2)]" /> 移出资料库
           </button>
         </div>,
         document.body

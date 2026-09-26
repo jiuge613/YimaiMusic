@@ -35,8 +35,13 @@ export const api = {
     invoke<void>("set_output_device", { name }),
   dropPaths: (paths: string[]) => invoke<number>("drop_paths", { paths }),
   getLyrics: (trackId: number) => invoke<LyricsPayload>("get_lyrics", { trackId }),
+  /** 备用歌词源（兜底）：按「歌名+歌手」搜网易云取最佳匹配歌词，主源无歌词时调用 */
+  backupLyric: (title: string, artist: string) =>
+    invoke<LyricsPayload>("backup_lyric", { title, artist }),
   likeTrack: (id: number, liked: boolean) =>
     invoke<void>("like_track", { id, liked }),
+  /** 移除本地歌曲记录（仅标记，不删磁盘文件） */
+  removeTrack: (id: number) => invoke<void>("remove_track", { id }),
   listPlaylists: () => invoke<Playlist[]>("list_playlists"),
   createPlaylist: (name: string) => invoke<number>("create_playlist", { name }),
   deletePlaylist: (id: number) => invoke<void>("delete_playlist", { id }),

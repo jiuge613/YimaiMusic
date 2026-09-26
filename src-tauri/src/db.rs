@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS tracks (
   size INTEGER NOT NULL DEFAULT 0,
   mtime INTEGER NOT NULL DEFAULT 0,
   added_at INTEGER NOT NULL DEFAULT 0,
-  missing INTEGER NOT NULL DEFAULT 0
+  missing INTEGER NOT NULL DEFAULT 0,
+  removed INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS playlists (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -186,6 +187,13 @@ pub fn migrate(conn: &Connection) {
         "lx_sources",
         "api_mode",
         "ALTER TABLE lx_sources ADD COLUMN api_mode TEXT NOT NULL DEFAULT ''",
+    );
+    // 用户主动移除的本地歌曲：扫描/导入跳过、资料库不显示（区别于文件缺失的 missing）
+    add_column_if_missing(
+        conn,
+        "tracks",
+        "removed",
+        "ALTER TABLE tracks ADD COLUMN removed INTEGER NOT NULL DEFAULT 0",
     );
     let _ = conn.execute(
         "UPDATE playlists SET sort_pos = id WHERE sort_pos = 0",
@@ -339,7 +347,7 @@ pub fn upsert_track(conn: &Connection, t: &NewTrack) {
            ON CONFLICT(path) DO UPDATE SET
              title=?2, artist=?3, album=?4, album_artist=?5, track_no=?6, disc=?7, year=?8,
              duration=?9, format=?10, bitrate=?11, sample_rate=?12, bit_depth=?13,
-             cover=?14, lrc_path=?15, size=?16, mtime=?17"#,
+             cover=?14, lrc_path=?15, size=?16, mtime=?17, removed=0"#,
         params![
             t.path, t.title, t.artist, t.album, t.album_artist, t.track_no, t.disc, t.year,
             t.duration, t.format, t.bitrate, t.sample_rate, t.bit_depth, t.cover, t.lrc_path,
@@ -356,6 +364,26 @@ pub fn track_paths(conn: &Connection) -> Vec<(String, i64, i64)> {
     stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
         .unwrap_or_default()
+}
+
+/// 被用户主动移除的曲目路径（扫描/导入时跳过，避免自动复活）
+pub fn removed_track_paths(conn: &Connection) -> std::collections::HashSet<String> {
+    let mut stmt = match conn.prepare("SELECT path FROM tracks WHERE removed = 1") {
+        Ok(s) => s,
+        Err(_) => return std::collections::HashSet::new(),
+    };
+    stmt.query_map([], |r| r.get(0))
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+/// 移除指定本地歌曲记录（仅标记，不动磁盘文件）：
+/// 资料库不再显示，扫描时不再重新导入；磁盘文件保留，歌单引用仍可播放。
+pub fn mark_track_removed(conn: &Connection, id: i64) -> bool {
+    let n = conn
+        .execute("UPDATE tracks SET removed = 1 WHERE id = ?1", params![id])
+        .unwrap_or(0);
+    n > 0
 }
 
 /// 文件已不存在时软删除（missing=1）：记录保留（含喜欢/播放统计/歌单引用），
@@ -437,7 +465,8 @@ LEFT JOIN stats s ON s.track_id = t.id
 "#;
 
 pub fn list_tracks(conn: &Connection) -> Vec<TrackMeta> {
-    let mut stmt = match conn.prepare(&(TRACK_SELECT.to_string() + "ORDER BY t.id")) {
+    // 用户主动移除的歌曲不出现在资料库（get_track 仍保留，歌单引用可继续播放）
+    let mut stmt = match conn.prepare(&(TRACK_SELECT.to_string() + "WHERE t.removed = 0 ORDER BY t.id")) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("[db] 读取曲目列表失败: {e}");

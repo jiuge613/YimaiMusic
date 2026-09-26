@@ -27,6 +27,7 @@ import type {
   PlayState,
   QqSong,
   KgSong,
+  LxQueueEntry,
   Playlist,
   QueueItem,
   RepeatMode,
@@ -98,6 +99,9 @@ interface Store {
   kugouSearched: boolean;
   kugouPage: number;
   kugouCache: Record<string, KgSong>;
+
+  /** LX（排行榜音源）在线曲目播放缓存：键 "sourceId:platform:songId" */
+  lxCache: Record<string, LxQueueEntry>;
 
   quality: string;
   /** 关闭主窗口行为：tray = 最小化到托盘（默认）；exit = 直接退出应用 */
@@ -174,6 +178,8 @@ interface Store {
   setLyricsColors(c: LyricPageColors): void;
 
   toggleLike(id: number): void;
+  /** 移除本地歌曲记录（仅标记 removed，不删磁盘文件） */
+  removeTrack(id: number): Promise<void>;
   addToQueue(item: QueueItem): void;
   playNext(item: QueueItem): void;
   removeQueueItem(i: number): void;
@@ -419,7 +425,10 @@ function pullPlayState() {
 /** 队列项显示名（失败提示用；取不到返回占位） */
 function titleOfQueueItem(
   item: { kind: string; id: number | string },
-  caches: Pick<Store, "tracks" | "neteaseCache" | "qqCache" | "kugouCache" | "sources">
+  caches: Pick<
+    Store,
+    "tracks" | "neteaseCache" | "qqCache" | "kugouCache" | "lxCache" | "sources"
+  >
 ): string {
   if (item.kind === "track") {
     return caches.tracks.find((t) => t.id === item.id)?.title ?? `曲目 #${item.id}`;
@@ -432,6 +441,9 @@ function titleOfQueueItem(
   }
   if (item.kind === "kugou") {
     return caches.kugouCache[item.id as string]?.name ?? `酷狗 #${item.id}`;
+  }
+  if (item.kind === "lx") {
+    return caches.lxCache[item.id as string]?.name ?? `音源 #${item.id}`;
   }
   return caches.sources.find((s) => s.id === item.id)?.title ?? `音源 #${item.id}`;
 }
@@ -527,6 +539,8 @@ export const useStore = create<Store>((set, get) => ({
   kugouSearched: false,
   kugouPage: 1,
   kugouCache: {},
+
+  lxCache: {},
 
   quality: "high",
   closeAction: "tray",
@@ -874,6 +888,7 @@ export const useStore = create<Store>((set, get) => ({
     const neteaseCache = { ...get().neteaseCache };
     const qqCache = { ...get().qqCache };
     const kugouCache = { ...get().kugouCache };
+    const lxCache = { ...get().lxCache };
     for (const e of entries) {
       if (e.kind === "local" && e.trackId != null) {
         queue.push({ kind: "track", id: e.trackId });
@@ -913,6 +928,25 @@ export const useStore = create<Store>((set, get) => ({
           vip: e.vip ?? false,
         };
         queue.push({ kind: "kugou", id: e.onlineId });
+      } else if (e.kind === "lx" && e.onlineId) {
+        // onlineId = "sourceId:platform:songId"（与 online_tracks.rid 一致）；
+        // mediaMid 承载取链扩展上下文（酷狗 hash / QQ media_mid）
+        const parts = e.onlineId.split(":");
+        if (parts.length === 3) {
+          lxCache[e.onlineId] = {
+            id: e.onlineId,
+            sourceId: Number(parts[0]),
+            platform: parts[1],
+            songId: parts[2],
+            name: e.title,
+            artist: e.artist,
+            album: e.album,
+            cover: e.cover,
+            extra: e.mediaMid ?? "",
+            durationMs: Math.round(e.duration * 1000),
+          };
+          queue.push({ kind: "lx", id: e.onlineId });
+        }
       }
     }
     let target = Math.max(0, Math.min(idx, queue.length - 1));
@@ -925,6 +959,7 @@ export const useStore = create<Store>((set, get) => ({
       neteaseCache,
       qqCache,
       kugouCache,
+      lxCache,
       queue,
       qIndex: target,
       history: [...s.history.slice(-50), s.qIndex],
@@ -982,6 +1017,26 @@ export const useStore = create<Store>((set, get) => ({
       };
       set({ kugouCache });
       return { kind: "kugou", id: e.onlineId };
+    }
+    if (e.kind === "lx" && e.onlineId) {
+      // onlineId = "sourceId:platform:songId"；mediaMid 承载取链扩展上下文
+      const parts = e.onlineId.split(":");
+      if (parts.length !== 3) return null;
+      const lxCache = { ...get().lxCache };
+      lxCache[e.onlineId] = {
+        id: e.onlineId,
+        sourceId: Number(parts[0]),
+        platform: parts[1],
+        songId: parts[2],
+        name: e.title,
+        artist: e.artist,
+        album: e.album,
+        cover: e.cover,
+        extra: e.mediaMid ?? "",
+        durationMs: Math.round(e.duration * 1000),
+      };
+      set({ lxCache });
+      return { kind: "lx", id: e.onlineId };
     }
     return null;
   },
@@ -1087,6 +1142,26 @@ export const useStore = create<Store>((set, get) => ({
           cover: t.cover,
           durationMs: t.durationMs,
           vip: t.vip ?? false,
+        })
+        .then(ok)
+        .catch((e) => fail(String(e)));
+    } else if (item.kind === "lx") {
+      const t = get().lxCache[item.id];
+      if (!t) {
+        fail("曲目信息已失效");
+        return;
+      }
+      api
+        .lxPlaySong({
+          sourceId: t.sourceId,
+          platform: t.platform,
+          songId: t.songId,
+          title: t.name,
+          artist: t.artist,
+          album: t.album,
+          cover: t.cover,
+          durationMs: t.durationMs,
+          extra: t.extra,
         })
         .then(ok)
         .catch((e) => fail(String(e)));
@@ -1268,6 +1343,26 @@ export const useStore = create<Store>((set, get) => ({
       apply(!liked);
       get().toast("喜欢状态同步失败", "error");
     });
+  },
+
+  async removeTrack(id) {
+    const t = get().tracks.find((x) => x.id === id);
+    if (!t) return;
+    // 乐观移除：立刻从资料库 / 喜欢 / 最近播放里拿掉，再落库
+    set((s) => ({
+      tracks: s.tracks.filter((x) => x.id !== id),
+      current: s.current && s.current.id === id ? s.current : s.current,
+    }));
+    try {
+      await api.removeTrack(id);
+      get().toast(`已移除「${t.title || t.path.split(/[\\/]/).pop()}」`);
+      // 喜欢/最近播放等视图按需重取，保证与库一致
+      await get().refreshLikedOnline();
+    } catch (e) {
+      // 失败回滚（重新拉取曲库）
+      set((s) => ({ tracks: [...s.tracks, t] }));
+      get().toast(String(e), "error");
+    }
   },
 
   addToQueue(item) {
@@ -1948,8 +2043,26 @@ export const useStore = create<Store>((set, get) => ({
                   )
                 : await api.getLyrics(Number(id));
       if (get().lyricsFor === key) {
-        set({ lyrics: payload, lyricsLoading: false });
-        pushDesktopLyrics(get());
+        const lines = payload?.lines ?? [];
+        // 主源取到歌词：直接用；取不到：走备用歌词源（网易云匹配兜底）
+        if (lines.length > 0) {
+          set({ lyrics: payload, lyricsLoading: false });
+          pushDesktopLyrics(get());
+        } else {
+          const cur = get().current;
+          const backup = await api.backupLyric(
+            cur?.title ?? "",
+            cur?.artist ?? ""
+          );
+          if (get().lyricsFor === key) {
+            const ok = backup.lines.length > 0;
+            set({
+              lyrics: ok ? backup : null,
+              lyricsLoading: false,
+            });
+            if (ok) pushDesktopLyrics(get());
+          }
+        }
       }
     } catch {
       if (get().lyricsFor === key) set({ lyricsLoading: false, lyrics: null });

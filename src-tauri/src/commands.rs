@@ -20,9 +20,21 @@ fn engine_clone(state: &State<AppState>) -> std::sync::Arc<crate::engine::Engine
 #[tauri::command]
 pub async fn list_tracks(state: State<'_, AppState>) -> Result<Vec<TrackMeta>, String> {
     let conn = state.db.lock();
-    // 返回全量记录（含 missing 软删除），由前端按视图过滤：
-    // 资料库隐藏 missing，“我喜欢/最近播放”保留记录（文件没了也显示，仅是引用）
+    // 返回库内记录（含 missing 软删除，由前端按视图过滤：资料库隐藏 missing，
+    // “我喜欢/最近播放”保留引用）。被用户主动移除的歌曲（removed=1）已在
+    // SQL 层过滤，不会出现在任何本地列表。
     Ok(db::list_tracks(&conn))
+}
+
+/// 移除一条本地歌曲记录（仅标记 removed，不删磁盘文件）：
+/// 资料库不再显示，扫描时不再重新导入；文件保留，既有歌单引用仍可播放。
+#[tauri::command]
+pub async fn remove_track(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let conn = state.db.lock();
+    if !db::mark_track_removed(&conn, id) {
+        return Err("歌曲不存在或已移除".into());
+    }
+    Ok(())
 }
 
 /// 最近一次扫描进度快照（WebView 挂起期间 scan://progress 事件丢失，恢复后补发）
@@ -197,6 +209,85 @@ pub async fn get_lyrics(
                     return Ok(LyricsPayload { synced: p.synced, lines: p.lines });
                 }
             }
+        }
+    }
+    Ok(LyricsPayload { synced: false, lines: vec![] })
+}
+
+/// 备用歌词源（兜底）：按「歌名 + 歌手」搜网易云取最佳匹配，拉取歌词。
+/// 各主源（LX 无 lyric 端点 / 平台取词失败 / 本地无内嵌歌词）返回空时，
+/// 前端用本命令兜底，解决「无歌词」问题。匹配策略：
+/// 歌名归一化相等优先，其次包含关系 + 歌手一致/包含；都取不到返回空。
+#[tauri::command]
+pub async fn backup_lyric(
+    state: State<'_, AppState>,
+    title: String,
+    artist: String,
+) -> Result<LyricsPayload, String> {
+    let title = title.trim().to_string();
+    let artist = artist.trim().to_string();
+    if title.is_empty() {
+        return Ok(LyricsPayload { synced: false, lines: vec![] });
+    }
+    let music_u = netease_cookie(&state);
+    let kw = if artist.is_empty() { title.clone() } else { format!("{title} {artist}") };
+    let res = match crate::netease::search(&kw, 10, 0, music_u.as_deref()) {
+        Ok(r) => r,
+        Err(_) => return Ok(LyricsPayload { synced: false, lines: vec![] }),
+    };
+    let norm = |s: &str| s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+    let target = norm(&title);
+    let target_a = norm(&artist);
+    // 打分：0=不匹配；1=歌名包含；3=歌名相等；+2=歌手包含；+4=歌手相等
+    let mut best: Option<(i64, i32)> = None; // (song_id, score)
+    for s in &res.songs {
+        if s.id == 0 {
+            continue;
+        }
+        let name = norm(&s.name);
+        let arts: Vec<String> = s
+            .artist_str()
+            .split(" / ")
+            .map(|a| norm(a))
+            .collect();
+        let mut score = 0i32;
+        if !name.is_empty() && name == target {
+            score += 3;
+        } else if !name.is_empty() && (name.contains(&target) || target.contains(&name)) {
+            score += 1;
+        }
+        if !target_a.is_empty() {
+            let hit_exact = arts.iter().any(|a| a == &target_a);
+            let hit_part = arts
+                .iter()
+                .any(|a| !a.is_empty() && (a.contains(&target_a) || target_a.contains(a.as_str())));
+            if hit_exact {
+                score += 4;
+            } else if hit_part {
+                score += 2;
+            }
+        }
+        // 要求至少歌名层面命中（歌名相等或歌手有命中）才采信，避免拿错歌
+        if name == target || (score >= 1 && !target_a.is_empty()) {
+            if best.map(|(_, b)| score > b).unwrap_or(true) {
+                best = Some((s.id, score));
+            }
+        }
+    }
+    let Some((id, _)) = best else {
+        return Ok(LyricsPayload { synced: false, lines: vec![] });
+    };
+    // 逐字优先，失败回落行级 LRC；都没有时返回空（不阻断）
+    if let Ok(Some(lrc)) = crate::netease::lyric_yrc(id, music_u.as_deref()) {
+        let p = lyrics::parse(&lrc);
+        if !p.lines.is_empty() {
+            return Ok(LyricsPayload { synced: p.synced, lines: p.lines });
+        }
+    }
+    if let Ok(Some(lrc)) = crate::netease::lyric(id, music_u.as_deref()) {
+        let p = lyrics::parse(&lrc);
+        if !p.lines.is_empty() {
+            return Ok(LyricsPayload { synced: p.synced, lines: p.lines });
         }
     }
     Ok(LyricsPayload { synced: false, lines: vec![] })

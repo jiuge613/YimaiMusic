@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Flame,
+  Heart,
   Loader2,
   Music2,
   Play,
@@ -30,6 +31,8 @@ const CHARTS: { label: string; keyword: string }[] = [
 export default function RankingView() {
   const toast = useStore((s) => s.toast);
   const setView = useStore((s) => s.setView);
+  const toggleLikeOnline = useStore((s) => s.toggleLikeOnline);
+  const savedOnline = useStore((s) => s.savedOnline);
 
   const [sources, setSources] = useState<LxSourceItem[]>([]);
   const [sourceId, setSourceId] = useState<number>(0); // 0 = 自动（第一个启用的音源）
@@ -131,7 +134,29 @@ export default function RankingView() {
         setPlayingId("");
       }
     },
-    [platform, resultPlatform, resultSourceId, sourceId, sources, toast]
+      [platform, resultPlatform, resultSourceId, sourceId, sources, toast]
+  );
+
+  /** 收藏到“我喜欢”：LX 曲目的 rid 形如 "sourceId:platform:songId"，
+   *  取链上下文（酷狗 hash / QQ media_mid）放进 mediaMid，供二次播放复用 */
+  const likeSong = useCallback(
+    (s: LxSearchSong) => {
+      const sid = resultSourceId ?? (sourceId || sources[0]?.id || 0);
+      const plat = s.platform || resultPlatform || platform || "kg";
+      const rid = `${sid}:${plat}:${s.id}`;
+      void toggleLikeOnline({
+        kind: "lx",
+        id: rid,
+        name: s.title,
+        artist: s.artist ?? "",
+        album: s.album ?? "",
+        cover: "",
+        durationMs: s.durationMs ?? 0,
+        mediaMid: s.extra ?? "",
+        vip: false,
+      });
+    },
+    [platform, resultPlatform, resultSourceId, sourceId, sources, toggleLikeOnline]
   );
 
   const activeChart = CHARTS.find((c) => c.keyword === query)?.label ?? "";
@@ -401,11 +426,16 @@ export default function RankingView() {
                 {songs.map((s, i) => {
                   const playing = playingId === s.id;
                   const top = i < 3;
+                  // “我喜欢”收藏态：与 likeSong 的 rid 规则一致
+                  const sid = resultSourceId ?? (sourceId || sources[0]?.id || 0);
+                  const plat = s.platform || resultPlatform || platform || "kg";
+                  const likeKey = `lx-${sid}:${plat}:${s.id}`;
+                  const liked = !!savedOnline[likeKey];
                   return (
                     <div
                       key={`${s.platform}-${s.id}-${i}`}
                       onDoubleClick={() => playSong(s)}
-                      className="group grid grid-cols-[52px_minmax(180px,1fr)_minmax(110px,220px)_minmax(110px,240px)_72px_44px] items-center gap-4 h-[52px] px-3 rounded-xl hover:bg-[var(--shade)] transition-colors"
+                      className="group grid grid-cols-[52px_minmax(180px,1fr)_minmax(110px,220px)_minmax(110px,240px)_72px_44px_32px] items-center gap-3 h-[52px] px-3 rounded-xl hover:bg-[var(--shade)] transition-colors"
                     >
                       <span
                         className="text-center text-[13px] tabular-nums font-semibold"
@@ -443,6 +473,21 @@ export default function RankingView() {
                         ) : (
                           <Play size={13} className="fill-current text-[var(--ink)] ml-px" />
                         )}
+                      </button>
+                      <button
+                        className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 opacity-0 group-hover:opacity-100 transition-all hover:scale-105"
+                        style={{ background: "var(--shade)" }}
+                        title={liked ? "取消喜欢" : "加入“我喜欢”"}
+                        onClick={() => likeSong(s)}
+                      >
+                        <Heart
+                          size={15}
+                          className={
+                            liked
+                              ? "fill-[#e0533f] text-[#e0533f]"
+                              : "text-[var(--ink-2)]"
+                          }
+                        />
                       </button>
                     </div>
                   );

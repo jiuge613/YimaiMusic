@@ -17,6 +17,15 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::eq::{EqShared, EqSource};
 use crate::smtc::SmtcMsg;
 
+/// 解码 IO 缓冲：1 MiB（std 默认 8 KB）。解码线程在 cpal 回调驱动下持续拉样本，
+/// 大文件（FLAC 几十 MB）小缓冲会频繁触发系统调用，偶发 underrun 造成卡顿/爆音；
+/// 扩容后每次读取覆盖更长时间（1MiB ≈ 44.1kHz/16bit 立体声 ~7 秒），显著降低饥饿概率。
+const DECODE_BUF_SIZE: usize = 1024 * 1024;
+
+fn buffered_reader(file: File) -> BufReader<File> {
+    BufReader::with_capacity(DECODE_BUF_SIZE, file)
+}
+
 #[derive(Clone, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackInfo {
@@ -232,7 +241,7 @@ impl Engine {
                 if !info.path.is_empty() {
                     match File::open(&info.path) {
                         Ok(file) => {
-                            let src = Decoder::new(BufReader::new(file))
+                            let src = Decoder::new(buffered_reader(file))
                                 .map_err(|e| format!("无法解码该音频文件: {e}"))?
                                 .convert_samples::<f32>()
                                 .skip_duration(Duration::from_millis(pos));
@@ -271,7 +280,7 @@ impl Engine {
     pub fn play_file(&self, info: TrackInfo) -> Result<(), String> {
         *self.want_url.write() = None;
         let file = File::open(&info.path).map_err(|e| format!("打开文件失败: {e}"))?;
-        let src = Decoder::new(BufReader::new(file))
+        let src = Decoder::new(buffered_reader(file))
             .map_err(|e| format!("无法解码该音频文件: {e}"))?
             .convert_samples::<f32>();
         self.start(src, info)
@@ -401,7 +410,7 @@ impl Engine {
     /// FLAC 专用：重开文件并丢弃到目标时长，重建播放链
     fn rebuild_at(&self, info: &TrackInfo, ms: u64) -> Result<(), String> {
         let file = std::fs::File::open(&info.path).map_err(|e| format!("重开文件失败: {e}"))?;
-        let src = Decoder::new(BufReader::new(file))
+        let src = Decoder::new(buffered_reader(file))
             .map_err(|e| format!("重新解码失败: {e}"))?
             .convert_samples::<f32>()
             .skip_duration(Duration::from_millis(ms));

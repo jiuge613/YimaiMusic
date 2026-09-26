@@ -81,12 +81,21 @@ pub fn run_scan(app: AppHandle) {
             .map(|(p, mt, sz)| (p, (mt, sz)))
             .collect()
     };
+    // 用户主动移除的曲目：扫描不再重新解析导入（保持移除状态，资料库不复活）
+    let removed: HashSet<String> = {
+        let conn = st.db.lock();
+        db::removed_track_paths(&conn)
+    };
 
     let mut seen: HashSet<String> = HashSet::with_capacity(files.len());
     let mut to_parse: Vec<PathBuf> = Vec::new();
     for p in &files {
         let np = norm_path(p);
         seen.insert(np.clone());
+        if removed.contains(&np) {
+            // 已移除：计入 seen（避免误判 missing），但不重新解析导入
+            continue;
+        }
         let (mtime, size) = file_stat(p);
         match existing.get(&np) {
             Some((emt, esz)) if *emt == mtime && *esz == size => {}
