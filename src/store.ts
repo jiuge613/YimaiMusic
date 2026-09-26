@@ -239,6 +239,17 @@ interface Store {
     durationMs: number;
     mediaMid?: string;
   }): Promise<void>;
+  downloadLx(row: {
+    sourceId: number;
+    platform: string;
+    songId: string;
+    name: string;
+    artist: string;
+    album: string;
+    cover: string;
+    durationMs: number;
+    extra?: string;
+  }): Promise<void>;
   refreshLikedOnline(): Promise<void>;
   refreshRecentOnline(): Promise<void>;
   addOnlineToPlaylist(
@@ -1622,6 +1633,27 @@ export const useStore = create<Store>((set, get) => ({
         coverUrl: row.cover,
         durationMs: row.durationMs,
         mediaMid: row.mediaMid ?? "",
+      });
+      await get().refreshTracks();
+      get().toast(`已下载到资料库：${name}`, "success");
+    } catch (e) {
+      get().toast(String(e), "error");
+    }
+  },
+
+  async downloadLx(row) {
+    get().toast("开始下载…", "info");
+    try {
+      const name = await api.lxDownload({
+        sourceId: row.sourceId,
+        platform: row.platform,
+        songId: row.songId,
+        title: row.name,
+        artist: row.artist,
+        album: row.album,
+        cover: row.cover,
+        durationMs: row.durationMs,
+        extra: row.extra,
       });
       await get().refreshTracks();
       get().toast(`已下载到资料库：${name}`, "success");

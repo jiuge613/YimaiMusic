@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useStore } from "../store";
 import { api } from "../api";
+import { extractLxRuntimeBase } from "../lxRuntime";
 import type { LxSourceItem } from "../types";
 import {
   ACCENTS,
@@ -755,6 +756,30 @@ function SourceManagerSection() {
       setMode(null);
       reload();
     } catch (e) {
+      // 后端静态解析失败（含加密运算的混淆脚本无法解出接口地址）：
+      // 在 webview 内实际执行脚本，从运行时行为中还原取链基址与协议模式，再重试。
+      const hint = extractLxRuntimeBase(scriptText);
+      if (hint) {
+        try {
+          const r2 = await api.lxAddScriptSource(
+            scriptText,
+            hint.baseUrl,
+            hint.apiMode
+          );
+          toast(
+            r2.created
+              ? `已导入「${r2.name}」（运行时解析出接口 ${hint.baseUrl}）`
+              : `已更新「${r2.name}」的脚本内容`
+          );
+          setScriptText("");
+          setMode(null);
+          reload();
+          return;
+        } catch (e2) {
+          toast(String(e2), "error");
+          return;
+        }
+      }
       // 后端已给出具体原因（非脚本文档 / 结构不像音源脚本 / 无法解析接口地址）
       toast(String(e), "error");
     } finally {

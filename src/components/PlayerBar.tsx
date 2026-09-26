@@ -1,5 +1,6 @@
 import {
   ChevronUp,
+  Download,
   Heart,
   ListMusic,
   Pause,
@@ -201,6 +202,7 @@ export default function PlayerBar({ centered = false }: { centered?: boolean }) 
   const likedOnline = useStore((s) => s.likedOnline);
   const recentOnline = useStore((s) => s.recentOnline);
   const toggleLikeOnline = useStore((s) => s.toggleLikeOnline);
+  const downloadLx = useStore((s) => s.downloadLx);
   const togglePlay = useStore((s) => s.togglePlay);
   const next = useStore((s) => s.next);
   const prev = useStore((s) => s.prev);
@@ -410,6 +412,31 @@ export default function PlayerBar({ centered = false }: { centered?: boolean }) 
 
         {/* 右侧控制 */}
         <div className="flex items-center gap-2 w-[260px] min-w-[200px] justify-end">
+          {/* 下载歌曲（仅 LX 音源曲目显示） */}
+          {current &&
+            current.kind === "url" &&
+            current.lxSourceId != null &&
+            !!current.lxPlatform &&
+            !!current.lxSongId && (
+              <button
+                className="btn-ghost w-9 h-9"
+                onClick={() =>
+                  downloadLx({
+                    sourceId: current.lxSourceId!,
+                    platform: current.lxPlatform!,
+                    songId: current.lxSongId!,
+                    name: current.title,
+                    artist: current.artist,
+                    album: current.album,
+                    cover: current.cover,
+                    durationMs: current.durationMs,
+                  })
+                }
+                title="下载歌曲到资料库"
+              >
+                <Download size={16} />
+              </button>
+            )}
           {/* 桌面歌词开关（与速度按钮同尺寸，开启时点亮强调色） */}
           <button
             className={`btn-ghost w-9 h-9 text-[13px] font-bold ${

@@ -327,12 +327,18 @@ pub async fn lx_list_sources(state: State<'_, AppState>) -> Result<Vec<LxSourceI
 
 /// 导入本地音源脚本（选文件读出的内容 / 粘贴的脚本文本）：
 /// 静态解析契约后入库；解析失败返回带原因的中文错误。
+///
+/// `base_url` / `api_mode` 为可选回填：混淆脚本（取链基址运行时解码、静态无解）
+/// 由前端在 webview 内执行脚本取出基址与协议模式后传入，跳过静态 `extract_base`。
 #[tauri::command]
 pub async fn lx_add_script_source(
     state: State<'_, AppState>,
     content: String,
+    base_url: Option<String>,
+    api_mode: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let parsed = lxsource::parse_script(&content)?;
+    let parsed =
+        lxsource::parse_script_impl(&content, base_url.as_deref(), api_mode.as_deref())?;
     let platforms_json = serde_json::to_string(&parsed.platforms).unwrap_or_else(|_| "[]".into());
     let conn = state.db.lock();
     let (id, created) = db::lx_add_source(
@@ -342,8 +348,9 @@ pub async fn lx_add_script_source(
         &parsed.base_url,
         &content,
         &platforms_json,
+        &parsed.api_mode,
     )?;
-    Ok(json!({ "id": id, "created": created, "name": parsed.name, "baseUrl": parsed.base_url }))
+    Ok(json!({ "id": id, "created": created, "name": parsed.name, "baseUrl": parsed.base_url, "apiMode": parsed.api_mode }))
 }
 
 /// 添加网络音源（音源站根地址或 .js 订阅链接）：拉取 + 探测校验后入库。
@@ -364,6 +371,7 @@ pub async fn lx_add_network_source(
         &outcome.base_url,
         &outcome.origin,
         &platforms_json,
+        "",
     )?;
     Ok(json!({
         "id": id, "created": created, "kind": kind,
@@ -416,7 +424,7 @@ pub async fn lx_resolve_url(
     quality: Option<String>,
     extra: Option<String>,
 ) -> Result<String, String> {
-    let base = {
+    let (base, api_mode) = {
         let conn = state.db.lock();
         let item = db::lx_list_sources(&conn)
             .into_iter()
@@ -425,7 +433,7 @@ pub async fn lx_resolve_url(
         if !item.enabled {
             return Err("该音源已停用，请先在设置中启用".into());
         }
-        item.base_url
+        (item.base_url, item.api_mode)
     };
     lxsource::music_url(
         &base,
@@ -433,6 +441,7 @@ pub async fn lx_resolve_url(
         &song_id,
         quality.as_deref().unwrap_or("320k"),
         extra.as_deref(),
+        &api_mode,
     )
 }
 
@@ -789,7 +798,7 @@ pub async fn lx_play_song(
     if req.source_id <= 0 {
         return builtin_play_song(&state, &req);
     }
-    let (base, src_name, platforms) = {
+    let (base, src_name, platforms, api_mode) = {
         let conn = state.db.lock();
         let item = db::lx_list_sources(&conn)
             .into_iter()
@@ -798,7 +807,7 @@ pub async fn lx_play_song(
         if !item.enabled {
             return Err("该音源已停用，请先在设置中启用".into());
         }
-        (item.base_url, item.name, item.platforms)
+        (item.base_url, item.name, item.platforms, item.api_mode)
     };
     let platform = {
         let src_item = LxSourceItem {
@@ -809,6 +818,7 @@ pub async fn lx_play_song(
             origin: String::new(),
             platforms: platforms.clone(),
             enabled: true,
+            api_mode: String::new(),
             created_at: 0,
         };
         resolve_platform(&src_item, &req.platform)
@@ -833,6 +843,7 @@ pub async fn lx_play_song(
             origin: String::new(),
             platforms,
             enabled: true,
+            api_mode: String::new(),
             created_at: 0,
         };
         pick_quality(&src_item, &platform, &want)
@@ -844,6 +855,7 @@ pub async fn lx_play_song(
         &req.song_id,
         &quality,
         req.extra.as_deref(),
+        &api_mode,
     )?;
 
     // 最近播放：只有能映射回内置平台的曲目才记录（否则前端无法二次播放）
@@ -920,6 +932,171 @@ pub async fn lx_lyric(
     let text = lxsource::lyric(&base, &platform, &song_id)?;
     let p = lyrics::parse(&text);
     Ok(LyricsPayload { synced: p.synced, lines: p.lines })
+}
+
+/// 下载 LX 音源曲目到保存目录（写标签入库，资料库可见）。
+///
+/// 复用与 `lx_play_song` 完全一致的取链链路（含 api_mode 分流），因此标准协议与
+/// 自定义 v1 端点（混淆脚本）的曲目都能下载。下载完成后解析标签入库，并把该曲目
+/// 标记为在线已下载，保存目录纳入资料库扫描。
+#[tauri::command]
+pub async fn lx_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    req: LxDownloadReq,
+) -> Result<String, String> {
+    let title = req.title.trim().to_string();
+    if title.is_empty() {
+        return Err("歌曲标题为空".into());
+    }
+    let (base, api_mode, src_name, platforms) = {
+        let conn = state.db.lock();
+        let item = db::lx_list_sources(&conn)
+            .into_iter()
+            .find(|s| s.id == req.source_id)
+            .ok_or("音源不存在，请在设置 → 音源管理中重新添加")?;
+        if !item.enabled {
+            return Err("该音源已停用，请先在设置中启用".into());
+        }
+        (item.base_url, item.api_mode, item.name, item.platforms)
+    };
+
+    // 平台/音质抉择与播放链路一致
+    let platform = {
+        let src_item = LxSourceItem {
+            id: req.source_id,
+            kind: "network".into(),
+            name: src_name.clone(),
+            base_url: base.clone(),
+            origin: String::new(),
+            platforms: platforms.clone(),
+            enabled: true,
+            api_mode: api_mode.clone(),
+            created_at: 0,
+        };
+        resolve_platform(&src_item, &req.platform)
+    };
+    let setting = {
+        let conn = state.db.lock();
+        db::get_setting(&conn, "quality").unwrap_or_else(|| "high".to_string())
+    };
+    let by_setting = match setting.as_str() {
+        "lossless" | "flac" | "sq" => "flac",
+        "standard" | "normal" | "lq" => "128k",
+        _ => "320k",
+    };
+    let quality = {
+        let src_item = LxSourceItem {
+            id: req.source_id,
+            kind: "network".into(),
+            name: src_name.clone(),
+            base_url: base.clone(),
+            origin: String::new(),
+            platforms,
+            enabled: true,
+            api_mode: api_mode.clone(),
+            created_at: 0,
+        };
+        pick_quality(&src_item, &platform, by_setting)
+    };
+
+    let url = lxsource::music_url(
+        &base,
+        &platform,
+        &req.song_id,
+        &quality,
+        req.extra.as_deref(),
+        &api_mode,
+    )?;
+
+    // 扩展名：从直链路径推断，失败兜底 mp3
+    let ext = ext_from_url(&url);
+
+    // 下载到保存目录
+    let dir = save_dir(&state);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建保存目录失败: {e}"))?;
+    let artist = sanitize_filename(&req.artist);
+    let name = format!(
+        "{} - {}.{}",
+        if artist.is_empty() { "Unknown" } else { &artist },
+        sanitize_filename(&title),
+        ext
+    );
+    let dest = dir.join(&name);
+    let mut file = std::fs::File::create(&dest).map_err(|e| format!("创建文件失败: {e}"))?;
+    let (total, reader) = http_get_for("lx", &url)?;
+    let mut reader = reader.take(128 * 1024 * 1024);
+    let mut buf = [0u8; 64 * 1024];
+    let mut received: u64 = 0;
+    let mut last_emit = std::time::Instant::now();
+    let mut emitted = false;
+    // 分块读取并回报进度（与 download_online 同款 download://progress 事件）
+    let dl = (|| -> Result<(), String> {
+        loop {
+            let n = reader.read(&mut buf).map_err(|e| format!("下载失败: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n])
+                .map_err(|e| format!("写入文件失败: {e}"))?;
+            received += n as u64;
+            if last_emit.elapsed() >= std::time::Duration::from_millis(300) {
+                last_emit = std::time::Instant::now();
+                emitted = true;
+                let pct = if total > 0 {
+                    ((received as f64 / total as f64) * 100.0) as u64
+                } else {
+                    0
+                };
+                let _ = app.emit(
+                    "download://progress",
+                    json!({ "url": &title, "received": received, "total": total, "pct": pct.min(99), "done": false }),
+                );
+            }
+        }
+        Ok(())
+    })();
+    drop(file);
+    if let Err(e) = dl {
+        if emitted {
+            let _ = app.emit("download://progress", json!({ "url": &title, "done": true }));
+        }
+        return Err(e);
+    }
+    let _ = app.emit(
+        "download://progress",
+        json!({ "url": &title, "received": received, "total": if total == 0 { received } else { total }, "pct": 100, "done": true }),
+    );
+
+    // 歌词：尝试回查，失败静默（部分源无 lyric 端点）
+    let lyrics = lxsource::lyric(&base, &platform, &req.song_id).ok();
+    write_tags(&dest, &title, &req.artist, &req.album, &req.cover, lyrics.as_deref());
+
+    // 解析入库 + 标记在线已下载 + 保存目录纳入扫描
+    let mut track = crate::library::parse_track(&dest, &state.app_data).ok_or("解析歌曲失败")?;
+    if track.duration == 0.0 && req.duration_ms > 0 {
+        track.duration = req.duration_ms as f64 / 1000.0;
+    }
+    {
+        let conn = state.db.lock();
+        db::upsert_track(&conn, &track);
+        db::mark_online_downloaded(&conn, "lx", &format!("{}-{}", req.source_id, req.song_id));
+        let _ = db::add_folder(&conn, &dir.to_string_lossy());
+    }
+    Ok(name)
+}
+
+/// 从直链 URL 推断文件扩展名（取最后一个路径段的扩展；无则兜底 mp3）
+fn ext_from_url(url: &str) -> String {
+    let path = url.split('?').next().unwrap_or(url);
+    let seg = path.rsplit('/').next().unwrap_or("");
+    if let Some(pos) = seg.rfind('.') {
+        let e = &seg[pos + 1..];
+        if !e.is_empty() && e.len() <= 4 && e.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return e.to_lowercase();
+        }
+    }
+    "mp3".to_string()
 }
 
 // ---------- 播放控制 ----------
@@ -1468,6 +1645,26 @@ pub struct OnlineSaveReq {
     pub duration_ms: u64,
     #[serde(default)]
     pub media_mid: String,
+}
+
+/// LX 音源下载请求（凭播放时携带的音源身份取链后下载）
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LxDownloadReq {
+    pub source_id: i64,
+    pub platform: String,
+    pub song_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub artist: String,
+    #[serde(default)]
+    pub album: String,
+    #[serde(default)]
+    pub cover: String,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub extra: Option<String>,
 }
 
 fn save_dir(state: &State<AppState>) -> std::path::PathBuf {

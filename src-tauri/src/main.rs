@@ -526,6 +526,7 @@ fn main() {
             commands::lx_search,
             commands::lx_play_song,
             commands::lx_lyric,
+            commands::lx_download,
             commands::play_track,
             commands::play_source,
             commands::netease_search,

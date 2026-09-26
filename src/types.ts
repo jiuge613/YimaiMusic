@@ -91,6 +91,8 @@ export interface LxSourceItem {
   origin: string;
   platforms: LxPlatform[];
   enabled: boolean;
+  /** 取链协议模式："" = 标准 LX 协议；"v1" = 自定义 NestJS 端点（混淆脚本） */
+  apiMode?: string;
   createdAt: number;
 }
 

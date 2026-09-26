@@ -126,6 +126,11 @@ pub struct LxSourceItem {
     #[serde(default)]
     pub platforms: Vec<LxPlatform>,
     pub enabled: bool,
+    /// 取链协议模式："" = 标准 LX 协议（{base}/url.php）；"v1" = 自定义
+    /// NestJS 端点（POST {base}/v1/music/resolve-url）。混淆脚本（运行时解码基址）
+    /// 经前端执行取链后回填此字段，避免后端静态解析失败。
+    #[serde(default)]
+    pub api_mode: String,
     pub created_at: i64,
 }
 

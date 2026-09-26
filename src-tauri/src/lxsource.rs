@@ -60,6 +60,9 @@ pub struct ParsedScript {
     pub name: String,
     pub base_url: String,
     pub platforms: Vec<LxPlatform>,
+    /// 取链协议模式："" = 标准 LX 协议；"v1" = 自定义 NestJS 端点。
+    /// 由前端执行混淆脚本后回填（extract_base 静态无解时）。
+    pub api_mode: String,
 }
 
 /// 解析音源脚本文本，提取 API_BASE 与平台/音质契约。
@@ -70,6 +73,17 @@ pub struct ParsedScript {
 ///    —— 刻意不强制 `globalThis.lx` 与 `musicUrl`，普通音源脚本同样可导入；
 /// 3. 能定位取链接口基址（API_BASE 常量或脚本内首个 https 字面量）。
 pub fn parse_script(text: &str) -> Result<ParsedScript, String> {
+    parse_script_impl(text, None, None)
+}
+
+/// 带"前端回填提示"的解析入口：混淆脚本（基址运行时解码）经前端执行取出基址后，
+/// 把 `hint_base` / `hint_mode` 传回，跳过静态 `extract_base`，直接用前端结果。
+/// 无提示时行为与 `parse_script` 完全一致。
+pub fn parse_script_impl(
+    text: &str,
+    hint_base: Option<&str>,
+    hint_mode: Option<&str>,
+) -> Result<ParsedScript, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err("脚本内容为空，请选择音源脚本文件或粘贴脚本内容".into());
@@ -90,12 +104,19 @@ pub fn parse_script(text: &str) -> Result<ParsedScript, String> {
         );
     }
 
-    let base = extract_base(trimmed)
-        .ok_or_else(|| {
+    // 3) 取链基址：前端已执行脚本取出则直接用；否则静态解析
+    let base = match hint_base {
+        Some(b) if !b.trim().is_empty() => normalize_base(b.trim())
+            .ok_or_else(|| {
+                "前端回填的接口基址格式无效，请确认脚本内包含正确的接口地址".to_string()
+            })?,
+        _ => extract_base(trimmed).ok_or_else(|| {
             "无法从脚本中解析出取链接口地址（API_BASE）。请确认脚本内包含接口基址\
              （如 const API_BASE = 'https://…'）；含加密运算或私有协议的脚本暂不支持"
                 .to_string()
-        })?;
+        })?,
+    };
+    let api_mode = hint_mode.unwrap_or("").to_string();
 
     // 脚本名：@name 元数据 → 取链域名。脚本内中文名多为 \uXXXX 转义写法，需解码
     let name = extract_script_name(trimmed)
@@ -104,7 +125,7 @@ pub fn parse_script(text: &str) -> Result<ParsedScript, String> {
         .unwrap_or_else(|| format!("{} 音源", host_of(&base)));
     let platforms = extract_platforms(trimmed);
 
-    Ok(ParsedScript { name, base_url: base, platforms })
+    Ok(ParsedScript { name, base_url: base, platforms, api_mode })
 }
 
 /// 非脚本文档识别：误选网页 / JSON / XML 数据文件时给出准确提示。
@@ -535,17 +556,26 @@ fn host_of(base: &str) -> String {
 
 // ---------- 取链 ----------
 
-/// 取音频直链：`GET {base}/url.php?source&id&quality[&extra]` → data.url。
-/// extra 为可选的扩展上下文（酷狗 hash / QQ media_mid 等），原样透传。
+/// 取音频直链。
+///
+/// 按 `api_mode` 分流两种协议：
+/// - `""`（标准 LX）：`GET {base}/url.php?source&id&quality[&extra]` → data.url
+/// - `"v1"`（自定义 NestJS）：`POST {base}/v1/music/resolve-url`，DTO 为
+///   `{rid, level, source}`，返回标准 LX 信封 `{code:0, data:{url}}`，无需签名。
+///   混淆脚本（基址运行时解码）即走此分支。
 pub fn music_url(
     base: &str,
     source: &str,
     id: &str,
     quality: &str,
     extra: Option<&str>,
+    api_mode: &str,
 ) -> Result<String, String> {
     if id.is_empty() || id == "0" {
         return Err("歌曲 ID 无效，无法取链".into());
+    }
+    if api_mode == "v1" {
+        return music_url_v1(base, source, id, quality);
     }
     let mut url = format!("{base}/url.php?source={source}&id={id}&quality={quality}");
     if let Some(ex) = extra {
@@ -555,6 +585,38 @@ pub fn music_url(
         }
     }
     let data = unwrap_lx_envelope(get_json(&url)?, "取链")?;
+    let link = data
+        .get("url")
+        .and_then(|u| u.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !link.starts_with("http://") && !link.starts_with("https://") {
+        return Err("取链失败: 接口返回的直链无效".into());
+    }
+    Ok(link)
+}
+
+/// 自定义 v1 端点取链（`POST {base}/v1/music/resolve-url`）。
+///
+/// 与标准 LX 协议共用同一份 `{code:0, data:{url}}` 信封，区别仅在请求方式：
+/// 标准协议把参数放进 query，v1 放进 JSON body，字段名为 `rid`/`level`/`source`。
+/// 该端点常见于洛雪系"二次修改"聚合音源（基址运行时解码、无标准 lyric.php）。
+fn music_url_v1(base: &str, source: &str, id: &str, quality: &str) -> Result<String, String> {
+    let body = serde_json::json!({
+        "rid": id,
+        "level": quality,
+        "source": source,
+    });
+    let resp = agent()
+        .post(&format!("{base}/v1/music/resolve-url"))
+        .set("User-Agent", UA)
+        .set("Content-Type", "application/json")
+        .send_json(body)
+        .map_err(|e| http_err("取链", e))?;
+    let v = resp
+        .into_json::<serde_json::Value>()
+        .map_err(|e| format!("取链响应不是合法 JSON: {e}"))?;
+    let data = unwrap_lx_envelope(v, "取链")?;
     let link = data
         .get("url")
         .and_then(|u| u.as_str())

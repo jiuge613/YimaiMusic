@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS lx_sources (
   origin TEXT NOT NULL DEFAULT '',
   platforms TEXT NOT NULL DEFAULT '[]',
   enabled INTEGER NOT NULL DEFAULT 1,
+  api_mode TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS stats (
@@ -177,6 +178,14 @@ pub fn migrate(conn: &Connection) {
         "playlists",
         "sort_pos",
         "ALTER TABLE playlists ADD COLUMN sort_pos INTEGER NOT NULL DEFAULT 0",
+    );
+    // 音源取链协议模式："" = 标准 LX 协议；"v1" = 自定义 NestJS 端点。
+    // 混淆脚本（运行时解码基址）经前端执行取链后回填，旧库默认空（标准协议）。
+    add_column_if_missing(
+        conn,
+        "lx_sources",
+        "api_mode",
+        "ALTER TABLE lx_sources ADD COLUMN api_mode TEXT NOT NULL DEFAULT ''",
     );
     let _ = conn.execute(
         "UPDATE playlists SET sort_pos = id WHERE sort_pos = 0",
@@ -726,13 +735,14 @@ fn row_to_lx_source(r: &Row) -> rusqlite::Result<LxSourceItem> {
         origin: r.get(4)?,
         platforms: serde_json::from_str(&platforms_json).unwrap_or_default(),
         enabled: r.get::<_, i64>(6)? != 0,
-        created_at: r.get(7)?,
+        api_mode: r.get(7)?,
+        created_at: r.get(8)?,
     })
 }
 
 pub fn lx_list_sources(conn: &Connection) -> Vec<LxSourceItem> {
     let mut stmt = match conn.prepare(
-        "SELECT id, kind, name, base_url, origin, platforms, enabled, created_at \
+        "SELECT id, kind, name, base_url, origin, platforms, enabled, api_mode, created_at \
          FROM lx_sources ORDER BY id DESC",
     ) {
         Ok(s) => s,
@@ -760,20 +770,21 @@ pub fn lx_add_source(
     base_url: &str,
     origin: &str,
     platforms_json: &str,
+    api_mode: &str,
 ) -> Result<(i64, bool), String> {
     if let Some(existing) = lx_list_sources(conn).into_iter().find(|s| s.base_url == base_url) {
         // 已存在：刷新契约与脚本原文（订阅可能更新），保持启用状态不变
         conn.execute(
-            "UPDATE lx_sources SET name=?1, origin=?2, platforms=?3, kind=?4 WHERE id=?5",
-            params![name, origin, platforms_json, kind, existing.id],
+            "UPDATE lx_sources SET name=?1, origin=?2, platforms=?3, kind=?4, api_mode=?5 WHERE id=?6",
+            params![name, origin, platforms_json, kind, api_mode, existing.id],
         )
         .map_err(|e| e.to_string())?;
         return Ok((existing.id, false));
     }
     conn.execute(
-        "INSERT INTO lx_sources(kind, name, base_url, origin, platforms, enabled, created_at) \
-         VALUES(?1, ?2, ?3, ?4, ?5, 1, ?6)",
-        params![kind, name, base_url, origin, platforms_json, now_secs()],
+        "INSERT INTO lx_sources(kind, name, base_url, origin, platforms, enabled, api_mode, created_at) \
+         VALUES(?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
+        params![kind, name, base_url, origin, platforms_json, api_mode, now_secs()],
     )
     .map_err(|e| e.to_string())?;
     Ok((conn.last_insert_rowid(), true))

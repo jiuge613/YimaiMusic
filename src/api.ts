@@ -52,11 +52,22 @@ export const api = {
   deleteSource: (id: number) => invoke<void>("delete_source", { id }),
   // ---------- 音源管理（LX 兼容脚本 / 网络接口音源） ----------
   lxListSources: () => invoke<LxSourceItem[]>("lx_list_sources"),
-  lxAddScriptSource: (content: string) =>
-    invoke<{ id: number; created: boolean; name: string; baseUrl: string }>(
-      "lx_add_script_source",
-      { content }
-    ),
+  lxAddScriptSource: (
+    content: string,
+    baseUrl?: string,
+    apiMode?: string
+  ) =>
+    invoke<{
+      id: number;
+      created: boolean;
+      name: string;
+      baseUrl: string;
+      apiMode: string;
+    }>("lx_add_script_source", {
+      content,
+      baseUrl: baseUrl ?? null,
+      apiMode: apiMode ?? null,
+    }),
   lxAddNetworkSource: (url: string) =>
     invoke<LxAddNetworkResult>("lx_add_network_source", { url }),
   lxSetSourceEnabled: (id: number, enabled: boolean) =>
@@ -98,6 +109,18 @@ export const api = {
   /** LX 音源歌词：凭播放时携带的音源身份回查 lyric.php */
   lxLyric: (sourceId: number, platform: string, songId: string) =>
     invoke<LyricsPayload>("lx_lyric", { sourceId, platform, songId }),
+  /** 下载 LX 音源曲目（凭播放时携带的音源身份取链后下载到本地资料库） */
+  lxDownload: (req: {
+    sourceId: number;
+    platform: string;
+    songId: string;
+    title: string;
+    artist: string;
+    album: string;
+    cover: string;
+    durationMs: number;
+    extra?: string;
+  }) => invoke<string>("lx_download", { req }),
   neteaseSearch: (keyword: string, offset: number) =>
     invoke<{ total: number; songs: NeteaseTrack[] }>("netease_search", {
       keyword,
